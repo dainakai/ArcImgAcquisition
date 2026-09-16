@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 assert sys.platform == "win32"
-inspector, fake = (Path(arg).resolve() for arg in sys.argv[1:])
+probe, fake = (Path(arg).resolve() for arg in sys.argv[1:])
 with tempfile.TemporaryDirectory(prefix="dual_holo_sdk_") as tmp:
     root = Path(tmp)
     program_files = root / "Program Files"
@@ -15,13 +15,11 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_sdk_") as tmp:
     sdk.mkdir(parents=True)
     library = sdk / "SpinnakerC_v140.dll"
     shutil.copy2(fake, library)
-    # os.environ normalizes Windows variable names to uppercase. Avoid two
-    # case variants in the child environment block pointing at different SDKs.
-    env = dict(os.environ, PROGRAMFILES=str(program_files))
+    env = dict(os.environ)
     env.pop("SPINNAKER_C_LIBRARY", None)
 
     def inspect(environment):
-        return subprocess.run([str(inspector), "--runtime-only"], cwd=root, env=environment,
+        return subprocess.run([str(probe), str(program_files)], cwd=root, env=environment,
                               capture_output=True, text=True, timeout=10)
 
     def assert_loaded(result, expected):

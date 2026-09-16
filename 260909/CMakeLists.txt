@@ -105,9 +105,12 @@ if(BUILD_TESTING)
   endif()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   if(WIN32)
+    add_executable(windows_runtime_probe tests/windows_runtime_probe.cpp)
+    target_link_libraries(windows_runtime_probe PRIVATE holo_runtime)
+    holo_warnings(windows_runtime_probe)
     add_test(NAME windows_runtime_discovery COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime.py"
-      "$<TARGET_FILE:inspect_cameras>" "$<TARGET_FILE:fake_spinnaker>")
+      "$<TARGET_FILE:windows_runtime_probe>" "$<TARGET_FILE:fake_spinnaker>")
     set_tests_properties(windows_runtime_discovery PROPERTIES TIMEOUT 30)
   endif()
   add_test(NAME simulation COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.py" "$<TARGET_FILE:dual_holo>")

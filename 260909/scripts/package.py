@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_package_") as tmp:
     stage = Path(tmp) / name
     subprocess.run(["cmake", "--install", str(build), "--config", "Release",
                     "--component", "app", "--prefix", str(stage)], check=True)
+    inspector = stage / ("inspect_cameras.exe" if sys.platform == "win32" else "inspect_cameras")
+    assert inspector.is_file(), "Camera runtime diagnostic executable missing"
     if sys.platform == "darwin":
         exe = stage / "DualHolo.app/Contents/MacOS/DualHolo"
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(stage / "DualHolo.app")], check=True)
@@ -37,7 +39,8 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_package_") as tmp:
             deps = subprocess.check_output(["ldd", str(exe)], text=True)
             assert "not found" not in deps and "libopencv" not in deps and "Spinnaker" not in deps, deps
     subprocess.run([sys.executable, str(source / "tests/test_cli.py"), str(exe)], check=True)
-    assert list((stage / "licenses").rglob("*LICENSE*")), "Third-party notices missing"
+    for notice in ("opencv/LICENSE", "3rdparty/zlib/LICENSE", "3rdparty/libtiff/COPYRIGHT"):
+        assert (stage / "licenses" / notice).is_file(), f"Missing third-party notice: {notice}"
     archive = Path(shutil.make_archive(str(output / name), "gztar" if sys.platform == "linux" else "zip", tmp, name))
     # Verify the distributed bytes, including permissions after extraction.
     unpacked = Path(tmp) / "unpacked"
@@ -47,6 +50,10 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_package_") as tmp:
         # zipfile extraction does not restore POSIX modes; Finder/ditto does.
         subprocess.run(["ditto", "-x", "-k", str(archive), str(unpacked)], check=True)
     subprocess.run([sys.executable, str(source / "tests/test_cli.py"), str(restored)], check=True)
+    gui_command = [str(restored), "--simulate", "--seconds", "1", "--output", str(Path(tmp) / "gui-smoke")]
+    if sys.platform == "linux":
+        gui_command = ["xvfb-run", "-a", *gui_command]
+    subprocess.run(gui_command, cwd=unpacked, check=True, timeout=30)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    (output / (archive.name + ".sha256")).write_text(f"{digest}  {archive.name}\n")
+    (output / (archive.name + ".sha256")).write_text(f"{digest}  {archive.name}\n", newline="\n")
     print(f"Packaged and verified: {archive.name} ({archive.stat().st_size:,} bytes; {platform.machine()})")

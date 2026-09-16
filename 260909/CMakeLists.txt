@@ -22,6 +22,8 @@ else()
   find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
 endif()
 find_package(Threads REQUIRED)
+# OpenCV sets the legacy EXECUTABLE_OUTPUT_PATH in the cache; keep our layout stable.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 function(holo_warnings target)
   if(MSVC)
@@ -93,7 +95,9 @@ endif()
 
 # A release is only portable when OpenCV is built into the executables.
 if(HOLO_BUNDLED_OPENCV)
-  install(TARGETS dual_holo inspect_cameras RUNTIME DESTINATION . BUNDLE DESTINATION . COMPONENT app)
+  install(TARGETS dual_holo inspect_cameras
+    RUNTIME DESTINATION . COMPONENT app
+    BUNDLE DESTINATION . COMPONENT app)
   install(FILES config.yml README.md docs/distribution.md DESTINATION . COMPONENT app)
   install(DIRECTORY "${CMAKE_BINARY_DIR}/third-party-licenses/" DESTINATION licenses COMPONENT app)
   if(APPLE)

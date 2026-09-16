@@ -91,7 +91,7 @@ ctest --test-dir 260909/build-win -C Release --output-on-failure
 
 `main`へのpush、pull request、手動実行でWindows x64、Linux x64、macOS arm64、macOS x64をビルドします。
 CIは実カメラを使わず、録画、画素値保存、排他ロック、模擬入力を検証します。
-配布フォルダと展開後のアプリでも模擬録画を実行します。
+配布フォルダと展開後のアプリでも模擬録画を実行し、展開後のGUI起動も確認します。
 成果物にはSHA-256と組み込んだライブラリのライセンスを含めます。
 Spinnakerランタイムと実カメラを使った各OSでの取得確認は、このCIの検証範囲外です。
 
@@ -106,7 +106,7 @@ git push origin v1.2.0
 通常のpushではActionsのArtifactsから取得できます。
 
 ローカルで配布形式を検証する場合は、`HOLO_BUNDLED_OPENCV=ON`でビルドしてから次を実行します。
-LinuxではOpenCVビルド用に `libgtk-3-dev` も必要です。
+LinuxではOpenCVビルド用に `libgtk-3-dev`、配布物のGUIテスト用に `xvfb` と `xauth` も必要です。
 
 ```sh
 python3 260909/scripts/package.py --build 260909/build-release --platform linux-x64 --output 260909/dist

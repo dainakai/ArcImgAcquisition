@@ -34,7 +34,8 @@ endforeach()
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/third-party-licenses")
 file(COPY "${opencv_SOURCE_DIR}/LICENSE" DESTINATION "${CMAKE_BINARY_DIR}/third-party-licenses/opencv")
 file(GLOB_RECURSE notices LIST_DIRECTORIES FALSE
-  "${opencv_SOURCE_DIR}/3rdparty/*LICENSE*" "${opencv_SOURCE_DIR}/3rdparty/*COPYING*")
+  "${opencv_SOURCE_DIR}/3rdparty/*LICENSE*" "${opencv_SOURCE_DIR}/3rdparty/*COPYING*"
+  "${opencv_SOURCE_DIR}/3rdparty/*COPYRIGHT*")
 foreach(notice IN LISTS notices)
   file(RELATIVE_PATH relative "${opencv_SOURCE_DIR}" "${notice}")
   get_filename_component(directory "${relative}" DIRECTORY)

@@ -1,4 +1,4 @@
-# Publish the acquisition application only; keep experiments and raw data local.
+# Publish acquisition and analyzer sources; keep experiments and raw data local.
 /*
 !/.gitignore
 !/AGENTS.md
@@ -16,6 +16,11 @@
 !/260909/cmake/
 !/260909/scripts/
 !/260909/docs/
+!/260909/analyzer/
+!/260909/registration/
+/260909/registration/*
+!/260909/registration/optical_padding.py
+!/260909/registration/optical_bandlimit.py
 /260909/docs/*
 !/260909/docs/manual_rec_validation.md
 !/260909/docs/distribution.md

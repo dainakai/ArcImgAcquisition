@@ -1,0 +1,9 @@
+.venv/
+build/
+dist/
+captures/
+.pytest_cache/
+*.spec
+*.dylib
+*.so
+*.dll

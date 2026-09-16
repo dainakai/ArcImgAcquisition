@@ -1,0 +1,113 @@
+name: DualHolo Analyze build and release
+on:
+  push:
+    branches: [main]
+    tags: ['analyzer-v*']
+    paths: ['260909/analyzer/**', '260909/registration/optical_*.py', '260909/src/**', '260909/CMakeLists.txt', '.github/workflows/analyzer.yml']
+  pull_request:
+    paths: ['260909/analyzer/**', '260909/registration/optical_*.py', '260909/src/**', '260909/CMakeLists.txt', '.github/workflows/analyzer.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: analyzer-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+            library: holo_capture.dll
+          - os: ubuntu-22.04
+            platform: ubuntu-x64
+            library: libholo_capture.so
+          - os: macos-14
+            platform: macos-arm64
+            library: libholo_capture.dylib
+          - os: macos-15-intel
+            platform: macos-x64
+            library: libholo_capture.dylib
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+      - name: Python dependencies
+        run: python -m pip install -r 260909/analyzer/requirements.txt pytest pyinstaller
+      - name: Verify independent release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python 260909/analyzer/check_release_tag.py
+      - name: Configure bridge
+        shell: bash
+        run: |
+          args=(-S 260909 -B 260909/build-analyzer -DHOLO_ANALYZER_BRIDGE=ON -DHOLO_BUNDLED_OPENCV=ON -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF)
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(-G 'Visual Studio 17 2022' -A x64)
+          elif [[ "$RUNNER_OS" == macOS ]]; then
+            args+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
+          fi
+          cmake "${args[@]}"
+      - name: Build bridge
+        run: cmake --build 260909/build-analyzer --config Release --target holo_capture --parallel 3
+      - name: Unit, GUI and full 4096 CPU numerical tests
+        shell: bash
+        run: |
+          export HOLO_CAPTURE_LIBRARY="$(find 260909/build-analyzer/analyzer -name '${{ matrix.library }}' -type f | head -1)"
+          export HOLO_CAPTURE_LIBRARY="$(python -c 'import os; print(os.path.abspath(os.environ["HOLO_CAPTURE_LIBRARY"]))')"
+          python -m pytest 260909/analyzer/tests --run-optical -q
+          python 260909/analyzer/package.py --bridge "$HOLO_CAPTURE_LIBRARY" --output dist --platform '${{ matrix.platform }}' --native-licenses 260909/build-analyzer/third-party-licenses
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DualHoloAnalyze-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    if: startsWith(github.ref, 'refs/tags/analyzer-v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: DualHoloAnalyze-*
+          path: dist
+          merge-multiple: true
+      - name: Publish separate Analyze release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(dist/DualHoloAnalyze-*.zip dist/DualHoloAnalyze-*.tar.gz)
+          test "${#archives[@]}" -eq 4
+          (cd dist && sha256sum --check *.sha256)
+          title="DualHolo Analyze ${RELEASE_TAG#analyzer-}"
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > draft.txt 2>/dev/null; then
+            test "$(cat draft.txt)" = true || { echo 'Refusing to replace a published release'; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "$title" --notes-file 260909/analyzer/release-notes.md --draft --latest=false
+          fi
+          gh release upload "$RELEASE_TAG" dist/DualHoloAnalyze-* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false

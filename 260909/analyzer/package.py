@@ -166,7 +166,7 @@ def main():
         extracted_executable = extracted / release.name / (name+(".exe" if os.name == "nt" else ""))
     smoke_test(extracted_executable, empty, smoke_yaml, env)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    archive.with_name(archive.name+".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    archive.with_name(archive.name+".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n")
     print(archive)
 
 

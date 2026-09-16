@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 project(dual_holo VERSION 1.2.2 LANGUAGES C CXX)
+if(APPLE)
+  # Enable before adding OpenCV: its Cocoa sources also need this language's
+  # compile rules in the parent scope during CMake generation.
+  enable_language(OBJCXX)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -46,7 +51,6 @@ add_executable(dual_holo src/main.cpp src/cameras.cpp)
 target_link_libraries(dual_holo PRIVATE holo_core holo_runtime)
 holo_warnings(dual_holo)
 if(APPLE)
-  enable_language(OBJCXX)
   set_source_files_properties(config.yml PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
   target_sources(dual_holo PRIVATE src/mac_app.mm config.yml)
   target_link_libraries(dual_holo PRIVATE "-framework AppKit")

@@ -7,14 +7,9 @@ Spinnakerを使うC++17アプリです。
 
 ## 起動と操作
 
-ビルド済みの `build/DualHolo.app` をダブルクリックします。
-ソースからビルドする場合は `run.command` を使います。
-アプリはこのディレクトリ内に置いたまま使ってください。
-
-```sh
-cd /Users/dai/Documents/repos/ArcImgAcquisition/260909
-./run.command
-```
+Windows、Linux、macOS用の配布アプリとビルド方法は[ビルドと配布](docs/distribution.md)を参照してください。
+macOSのソースビルドでは、このディレクトリで `./run.command` を実行できます。
+初回の確認には `./run.command --simulate` を使います。
 
 | 操作 | 動作 |
 |---|---|
@@ -111,41 +106,15 @@ GUIは各カメラの最新画像を表示し、古い画像を順に再生し�
 これは電気的同期を証明するものではありません。
 画面のReceived時間はSDKから受信して以降の経過時間で、センサ読出しやUSB転送、ディスプレイ発光までの全遅延ではありません。
 
-## 画像補正と光伝搬
+## オフライン解析
 
-最新の再計算結果は [calibration_4096/README.md](registration/calibration_4096/README.md) です。
-距離探索・Gabor再生の光伝搬は、元の入力場を中央に置いた4096 × 4096配列で行い、周囲を入力場の平均値で埋めます。
-Gaborでは `U0 = sqrt(I)` の平均振幅を使います。
-この方針はリポジトリ直下の [AGENTS.md](../AGENTS.md) に記録しました。
-
-保存画像の補正は、サブピクセルのfloat座標マップとLanczos4を既定にしています。
-既に補正した画像に繰り返し適用しないでください。
-
-```sh
-registration/.venv/bin/python registration/fast_correction.py \
-  original_cam1.tiff corrected_cam1.tiff
-```
-
-出力はfloat32 TIFFです。
-このアプリの録画画像は生データであり、光伝搬・幾何補正・GS位相回復はオフライン処理です。
+録画画像は生データです。
+光伝搬、幾何補正、GS位相回復などの解析は、撮影アプリとは別のリモート処理として実行します。
+この配布リポジトリには解析スクリプトと解析結果を含めません。
 
 ## ビルドと検証
 
-使用環境はApple Silicon版Spinnaker 4.4.0.246、OpenCV 5.0.0、CMake、Apple Clangです。
-SDKは `/Applications/Spinnaker`、OpenCVは `/opt/homebrew/opt/opencv` にあります。
-追加のSDK取得は不要です。
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j 4
-ctest --test-dir build --output-on-failure
-./build/dual_holo --simulate --seconds 30
-./build/dual_holo --simulate --headless --seconds 2 --record-at 0.3 --record-for 0.9 --output validation/test_rec
-registration/.venv/bin/python registration/test_optical_padding.py
-```
-
-`--record-at` / `--record-for` は模擬入力専用の検証オプションです。
-実カメラでは受け付けません。
-旧版の `--calibrate`、`--no-auto`、`--manual-at`、`--post`、`--background` とB/S/A操作は削除しました。
-以前の検出方式の説明と検証記録は履歴として残しています。
-今回の検証は [manual_rec_validation.md](docs/manual_rec_validation.md) に記録します。
+ビルド条件、OS別のコマンド、CIの配布方法は[ビルドと配布](docs/distribution.md)を参照してください。
+`--record-at` と `--record-for` は模擬入力専用の検証オプションで、実カメラでは受け付けません。
+従来のmacOSでの手動Rec検証は[検証記録](docs/manual_rec_validation.md)に残しています。
+今回のCIでは実カメラを使わず、全OSで録画テストと配布物の模擬実行を確認します。

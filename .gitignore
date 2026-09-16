@@ -19,6 +19,7 @@
 /260909/docs/*
 !/260909/docs/manual_rec_validation.md
 !/260909/docs/distribution.md
+!/260909/docs/release-notes.md
 .DS_Store
 __pycache__/
 *.pyc

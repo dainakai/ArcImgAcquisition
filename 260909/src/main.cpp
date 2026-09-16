@@ -1,6 +1,7 @@
 #include "cameras.hpp"
 #include "recorder.hpp"
 #include <csignal>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <sstream>

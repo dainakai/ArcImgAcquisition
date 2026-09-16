@@ -1,0 +1,89 @@
+name: Build and release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev ninja-build
+      - name: Configure
+        shell: bash
+        run: |
+          args=(-S 260909 -B 260909/build-ci -DHOLO_BUNDLED_OPENCV=ON -DCMAKE_BUILD_TYPE=Release)
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(-G 'Visual Studio 17 2022' -A x64)
+          else
+            args+=(-G 'Unix Makefiles')
+          fi
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            args+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
+          fi
+          cmake "${args[@]}"
+      - name: Build
+        run: cmake --build 260909/build-ci --config Release --parallel 3
+      - name: Tests (no cameras)
+        run: ctest --test-dir 260909/build-ci -C Release --output-on-failure
+      - name: Package and test extracted application
+        run: python 260909/scripts/package.py --build 260909/build-ci --platform ${{ matrix.platform }} --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DualHolo-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish tested release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          archives=(dist/*.zip dist/*.tar.gz)
+          test "${#archives[@]}" -eq 4
+          (cd dist && sha256sum --check *.sha256)
+          args=(--verify-tag --title "DualHolo $RELEASE_TAG" --notes-file 260909/docs/release-notes.md --draft)
+          if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "${args[@]}"
+          gh release upload "$RELEASE_TAG" dist/*
+          gh release edit "$RELEASE_TAG" --draft=false

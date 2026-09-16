@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>dual_holo</string>
+<key>CFBundleExecutable</key><string>DualHolo</string>
 <key>CFBundleIdentifier</key><string>com.dainakai.dualholo</string>
 <key>CFBundleName</key><string>DualHolo</string>
 <key>CFBundleDisplayName</key><string>Dual Hologram Viewer</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.1</string>
+<key>CFBundleShortVersionString</key><string>1.2.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSCameraUsageDescription</key><string>Display and record synchronized external-trigger holograms from the two connected cameras.</string>
 </dict></plist>

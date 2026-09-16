@@ -1,7 +1,7 @@
 #pragma once
 #include "core.hpp"
-#include <Spinnaker.h>
-#include <SpinGenApi/SpinnakerGenApi.h>
+#include "camera_lock.hpp"
+#include "spin_api.hpp"
 namespace holo {
 class Cameras {
 public:
@@ -16,11 +16,12 @@ private:
     Shared& shared_;
     std::filesystem::path session_;
     std::function<void(int,FramePtr)> on_frame_;
-    Spinnaker::SystemPtr system_;
-    Spinnaker::CameraList list_;
-    std::array<Spinnaker::CameraPtr,2> cameras_;
+    CameraLock lock_;
+    std::unique_ptr<SpinApi> api_;
+    SpinApi::Handle system_=nullptr, list_=nullptr;
+    std::array<SpinApi::Handle,2> cameras_{};
+    std::array<SpinApi::Handle,2> maps_{};
     std::array<bool,2> initialized_{}, acquiring_{};
-    int lock_fd_ = -1;
     std::array<ClockMap,2> clock_;
     std::array<std::thread,2> threads_;
     ClockMap calibrateClock(int index);

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(dual_holo VERSION 1.2.4 LANGUAGES C CXX)
+project(dual_holo VERSION 1.2.5 LANGUAGES C CXX)
 if(APPLE)
   # Enable before adding OpenCV: its Cocoa sources also need this language's
   # compile rules in the parent scope during CMake generation.

@@ -137,7 +137,7 @@ int main(int argc,char** argv) {
         } catch(const std::filesystem::filesystem_error& e) {
 #ifdef __APPLE__
             throw std::runtime_error("Cannot create capture folder: "+session.parent_path().string()+
-                "\nMove DualHolo.app with Finder to a writable folder and relaunch, or use --output DIR.\n"+e.what());
+                "\nCheck write permission for this folder, or use --output DIR.\n"+e.what());
 #else
             throw;
 #endif

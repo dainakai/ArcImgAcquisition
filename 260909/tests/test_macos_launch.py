@@ -1,7 +1,7 @@
 """Launch the standalone .app through Finder's Launch Services, without cameras.
 
-No --config/--output override: this catches the /captures failure hidden by the
-normal GUI smoke test. An isolated read-only bundle models App Translocation.
+No --config/--output override: verify captures is beside the .app even when
+Finder starts from /. The bundle itself stays read-only.
 """
 from pathlib import Path
 import re
@@ -13,19 +13,17 @@ import time
 
 bundle = Path(sys.argv[1]).resolve()
 assert sys.platform == "darwin" and bundle.suffix == ".app", bundle
-capture_root = Path.home() / "Pictures/DualHolo/captures"
-existing = set(capture_root.glob("session_*"))
-
 with tempfile.TemporaryDirectory(prefix="dual_holo_finder_") as tmp:
     root = Path(tmp).resolve()
-    isolated = root / "Read Only Location"
+    isolated = root / "Application Folder"
     isolated.mkdir()
+    capture_root = isolated / "captures"
     app = isolated / "DualHolo.app"
     shutil.copytree(bundle, app, symlinks=True)
     resource = app / "Contents/Resources/config.yml"
     assert resource.is_file(), "Standalone .app must include its default settings"
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-    paths = [*app.rglob("*"), app, isolated]
+    paths = [*app.rglob("*"), app]
     modes = {p: p.stat().st_mode & 0o777 for p in paths if not p.is_symlink()}
     session = None
     try:
@@ -47,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_finder_") as tmp:
                     break
             time.sleep(0.05)
         assert session and session.parent == capture_root, stdout + stderr
-        assert session not in existing and session.name.endswith("_SIMULATION"), session
+        assert session.name.endswith("_SIMULATION"), session
         assert f'Config: "{resource}"' in stdout, stdout
         summary = (session / "run_summary.yml").read_text()
         stats = dict(re.findall(r"^(\w+):\s*([^\n]*)", summary, re.M))
@@ -56,10 +54,28 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_finder_") as tmp:
         assert int(float(stats["gui_draws"])) >= 2, stats
         assert all(int(float(stats[f"received_cam{i}"])) >= 2 for i in range(2)), stats
         assert not list(session.rglob("*.tiff")), "Finder launch must start with REC OFF"
-        print("Finder launch: read-only standalone bundle, embedded config, default user capture path and GUI passed")
+        print("Finder launch: read-only standalone bundle, embedded config, captures beside .app and GUI passed")
+        # A non-writable destination must fail visibly instead of silently
+        # redirecting the user's captures to another location.
+        shutil.rmtree(capture_root)
+        isolated.chmod(0o555)
+        exe = app / "Contents/MacOS/DualHolo"
+        blocked = subprocess.run([str(exe), "--simulate", "--headless", "--seconds", "0.1"],
+                                 cwd="/", capture_output=True, text=True, timeout=10)
+        assert blocked.returncode == 1, blocked.stdout + blocked.stderr
+        assert "Cannot create capture folder:" in blocked.stderr and str(capture_root) in blocked.stderr, blocked.stderr
+        assert "Move DualHolo.app with Finder to a writable folder" in blocked.stderr, blocked.stderr
+        assert not capture_root.exists(), capture_root
+        # Explicit --output still lets an app in a read-only folder run.
+        override = root / "Explicit Output"
+        redirected = subprocess.run([str(exe), "--simulate", "--headless", "--seconds", "0.1",
+                                     "--output", str(override)],
+                                    cwd="/", capture_output=True, text=True, timeout=10)
+        assert redirected.returncode == 0, redirected.stdout + redirected.stderr
+        assert len(list(override.glob("session_*/run_summary.yml"))) == 1
+        assert not list(override.rglob("*.tiff")), "Explicit output must start with REC OFF"
+        print("Unwritable app folder: actionable error, no alternate default, explicit --output works")
     finally:
+        isolated.chmod(0o755)
         for p, mode in reversed(list(modes.items())):
             p.chmod(mode)
-        if (session and session.parent == capture_root and session not in existing
-                and session.name.endswith("_SIMULATION")):
-            shutil.rmtree(session)

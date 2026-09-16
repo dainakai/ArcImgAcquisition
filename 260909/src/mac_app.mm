@@ -11,10 +11,10 @@ std::string macBundledConfig() {
 }
 std::string macCaptureRoot() {
     @autoreleasepool {
-        NSURL* pictures=[[[NSFileManager defaultManager] URLsForDirectory:NSPicturesDirectory
-            inDomains:NSUserDomainMask] firstObject];
-        if(!pictures) throw std::runtime_error("Cannot locate the user's Pictures folder; use --output DIR");
-        return std::string([[[pictures URLByAppendingPathComponent:@"DualHolo"] path] fileSystemRepresentation]);
+        NSURL* bundle=[[NSBundle mainBundle] bundleURL];
+        if(!bundle || ![[bundle pathExtension] isEqualToString:@"app"])
+            throw std::runtime_error("Cannot locate DualHolo.app; use --output DIR");
+        return std::string([[[bundle URLByDeletingLastPathComponent] path] fileSystemRepresentation]);
     }
 }
 void macShowError(const std::string& message) {

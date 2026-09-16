@@ -3,7 +3,6 @@
 ## 配布アプリの起動
 
 [Releases](https://github.com/dainakai/ArcImgAcquisition/releases) からOSに合うアーカイブを取得し、書き込み可能な場所へ展開します。
-プライベートリポジトリのReleaseを取得できるのは、リポジトリへのアクセス権を持つユーザーです。
 WindowsとLinuxは設定ファイルとアプリを同じ配布フォルダに置いて使います。
 macOSの `.app` には既定の設定も含まれるため、アプリだけを移動しても起動できます。
 
@@ -23,8 +22,10 @@ macOS版はアドホック署名のみで、Appleの公証とDeveloper ID署名�
 Windows版にもAuthenticode署名はありません。
 OSが起動を確認する場合は、配布元を確認してOSの許可操作を行います。
 
-macOSでFinderから起動した場合、既定の保存先は `~/Pictures/DualHolo/captures` です。
-起動場所やアプリの配置先が読み取り専用でも、このユーザーフォルダへ保存します。
+macOSの既定の保存先は `DualHolo.app` と同じフォルダの `captures` です。
+Finderから起動した場合も、ターミナルの作業フォルダに関係なくこの場所へ保存します。
+アプリの隣に書き込めない場合はエラーを表示します。別の保存先へ自動変更しません。
+その場合はFinderでアプリを書き込み可能なフォルダへ移動して起動し直すか、`--output` で保存先を指定してください。
 SDKの不足などで起動できない場合は、エラーをダイアログに表示します。
 独自の設定を確実に指定する場合は、ターミナルから `--config /設定ファイルの絶対パス/config.yml` で起動してください。
 `--config` を明示した場合、相対指定の `output_dir` は従来どおり設定ファイルの場所を基準にします。
@@ -45,13 +46,15 @@ C APIライブラリを含むSpinnaker 4.xを想定しています。
 SDK側の対応OSも確認してください。特にIntel Macは対応するSDKの入手が必要です。
 SDKとドライバはこのアーカイブに同梱しません。
 
-アプリは標準インストール先を探索します。
+Windowsでは `C:\Program Files\Teledyne\Spinnaker\bin64\vs2015\SpinnakerC_v140.dll` を最初に探索します。
+`ProgramFiles` が別ドライブを指す場合は、その配下を使います。
+従来のインストール先・DLL名も探索します。
 標準外の場所へインストールした場合は、環境変数 `SPINNAKER_C_LIBRARY` にC APIライブラリの絶対パスを指定します。
 依存するSDKライブラリとGenTLも公式インストーラで導入してください。
 
 ```powershell
 # Windows PowerShellの例。実際のSDKインストール先に合わせる。
-$env:SPINNAKER_C_LIBRARY = 'C:\Program Files\FLIR Systems\Spinnaker\bin64\vs2015\Spinnaker_C_v140.dll'
+$env:SPINNAKER_C_LIBRARY = 'C:\Program Files\Teledyne\Spinnaker\bin64\vs2015\SpinnakerC_v140.dll'
 .\dual_holo.exe --config config.yml
 ```
 
@@ -112,8 +115,10 @@ CIは実カメラを使わず、録画、画素値保存、排他ロック、模
 配布フォルダと展開後のアプリでも模擬録画を実行します。
 GUIは指定時間動き続けて複数回描画したことを確認し、正常な終了コードだけで合格にしません。
 LinuxではXvfbとOpenboxを使い、ウィンドウの表示、Rでの録画開始、タイトルバーの「×」による終了と保存待ち画像の書き出しも検証します。
-macOSでは設定ファイルを隣に置かず、読み取り専用の場所に `.app` だけを配置して、Finderと同じ起動経路も検証します。
-この検証では `--config` と `--output` を指定せず、内蔵設定の読み込み、既定の保存先、GUIの継続描画を確認します。
+macOSでは設定ファイルを隣に置かず、書き込み可能なフォルダに読み取り専用の `.app` だけを配置して、Finderと同じ起動経路も検証します。
+この検証では `--config` と `--output` を指定せず、内蔵設定の読み込み、アプリの隣の `captures`、GUIの継続描画を確認します。
+隣に書き込めない場合のエラーと、`--output` による保存先の指定も検証します。
+Windowsでは模擬DLLをTeledyneのインストール先と同じフォルダ構成に配置し、環境変数でDLLを指定しなくても読み込めることを確認します。
 Windowsでは配布された `Simulate.cmd` と `Run.cmd --simulate` からGUIを表示し、保存先指定なしの起動も検証します。
 SDKが見つからない場合と設定が不正な場合は、実カメラに触れずにエラーダイアログ、詳細ログ、失敗の終了コードまで確認します。
 成果物にはSHA-256と組み込んだライブラリのライセンスを含めます。
@@ -121,8 +126,8 @@ Spinnakerランタイムと実カメラを使った各OSでの取得確認は、
 
 ```sh
 # バージョンは260909/CMakeLists.txtで更新する。Info.plistにも自動反映される。
-git tag v1.2.3
-git push origin v1.2.3
+git tag v1.2.4
+git push origin v1.2.4
 ```
 
 `v*`タグの全ビルドとテストが成功すると、4種類のアーカイブをGitHub Releaseへ登録します。

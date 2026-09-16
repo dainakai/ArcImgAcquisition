@@ -21,7 +21,7 @@ void help() {
              <<"  --simulate          synthetic two-camera input; no hardware\n"
              <<"  --headless          no display\n"
              <<"  --seconds N         stop after N seconds (0: unlimited)\n"
-             <<"  --output DIR        override capture root (Windows/macOS default: Pictures/DualHolo/captures)\n"
+             <<"  --output DIR        override capture root (macOS: captures beside DualHolo.app; Windows: Pictures/DualHolo/captures)\n"
              <<"  --record-at N       SIMULATION ONLY: test a REC start after N seconds\n"
              <<"  --record-for N      SIMULATION ONLY: stop the test recording after N seconds\n"
              <<"  --help              this message\n"
@@ -105,9 +105,8 @@ int main(int argc,char** argv) {
         }
         if(!explicit_output && std::filesystem::path(cfg.output_dir).is_relative()) {
 #ifdef __APPLE__
-            // Auto-discovered settings must never write beside a translocated
-            // bundle or into Finder's cwd (/). Explicit --config retains its
-            // existing config-relative output semantics.
+            // Resolve relative output beside the .app, independent of Finder's
+            // cwd (/). Explicit --config retains config-relative semantics.
             if(!explicit_config) cfg.output_dir=(std::filesystem::path(macCaptureRoot())/cfg.output_dir).string();
             else
 #elif defined(_WIN32)
@@ -133,7 +132,16 @@ int main(int argc,char** argv) {
         if(record_for>=0 && record_at<0) throw std::runtime_error("--record-for requires --record-at");
         cv::setNumThreads(cfg.opencv_threads);std::signal(SIGINT,signalHandler);std::signal(SIGTERM,signalHandler);
         auto session=std::filesystem::absolute(cfg.output_dir)/("session_"+timestamp()+(simulate?"_SIMULATION":""));
-        if(!std::filesystem::create_directories(session)) throw std::runtime_error("Session directory already exists");
+        try {
+            if(!std::filesystem::create_directories(session)) throw std::runtime_error("Session directory already exists");
+        } catch(const std::filesystem::filesystem_error& e) {
+#ifdef __APPLE__
+            throw std::runtime_error("Cannot create capture folder: "+session.parent_path().string()+
+                "\nMove DualHolo.app with Finder to a writable folder and relaunch, or use --output DIR.\n"+e.what());
+#else
+            throw;
+#endif
+        }
         cfg.write(session/"config.yml");std::cout<<"Session: "<<session<<std::endl;
         Shared shared;Pairer pairer(cfg);std::mutex pair_mutex;Recorder recorder(cfg,shared,session);
         auto on_frame=[&](int i,FramePtr frame) {

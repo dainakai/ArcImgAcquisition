@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(dual_holo VERSION 1.2.3 LANGUAGES C CXX)
+project(dual_holo VERSION 1.2.4 LANGUAGES C CXX)
 if(APPLE)
   # Enable before adding OpenCV: its Cocoa sources also need this language's
   # compile rules in the parent scope during CMake generation.
@@ -104,6 +104,12 @@ if(BUILD_TESTING)
     add_test(NAME sdk_abi_tests COMMAND sdk_abi_tests)
   endif()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  if(WIN32)
+    add_test(NAME windows_runtime_discovery COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime.py"
+      "$<TARGET_FILE:inspect_cameras>" "$<TARGET_FILE:fake_spinnaker>")
+    set_tests_properties(windows_runtime_discovery PROPERTIES TIMEOUT 30)
+  endif()
   add_test(NAME simulation COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.py" "$<TARGET_FILE:dual_holo>")
   set_tests_properties(holo_tests lock_tests simulation PROPERTIES TIMEOUT 90)
 endif()

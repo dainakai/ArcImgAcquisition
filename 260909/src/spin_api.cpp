@@ -24,9 +24,10 @@ SpinApi::SpinApi() {
         // Search SDK install locations, not the current working directory.
         const char* program_files=std::getenv("ProgramFiles");
         auto base=std::filesystem::path(program_files?program_files:"C:/Program Files");
-        for(const auto& vendor:{"Teledyne Spinnaker","Teledyne/Spinnaker","FLIR Systems/Spinnaker"})
+        for(const auto& vendor:{"Teledyne/Spinnaker","Teledyne Spinnaker","FLIR Systems/Spinnaker"})
             for(const auto& dir:{"bin64/vs2015","bin64/vs2022","bin64"})
-                for(const auto& file:{"Spinnaker_C_v140.dll","Spinnaker_C.dll"}) paths.push_back(base/vendor/dir/file);
+                for(const auto& file:{"SpinnakerC_v140.dll","SpinnakerC.dll","Spinnaker_C_v140.dll","Spinnaker_C.dll"})
+                    paths.push_back(base/vendor/dir/file);
 #elif defined(__APPLE__)
         paths.emplace_back("/Applications/Spinnaker/lib/libSpinnaker_C.dylib");
         paths.emplace_back("/usr/local/lib/libSpinnaker_C.dylib");

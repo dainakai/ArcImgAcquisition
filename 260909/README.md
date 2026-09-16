@@ -52,7 +52,8 @@ cam0/1の名前は光学的な前後関係を表しません。
 ## 保存形式
 
 既定の保存先は `captures/session_日時/` です。
-macOSでFinderから起動する場合は `~/Pictures/DualHolo/captures/session_日時/` に保存します。
+macOSの通常起動では、`DualHolo.app` と同じフォルダの `captures/session_日時/` に保存します。
+アプリの隣に書き込めない場合はエラーを表示します。Finderで書き込み可能なフォルダへ移動して起動し直すか、`--output` で保存先を指定してください。
 Windowsの通常起動は、ユーザーの「ピクチャ」フォルダ内の `DualHolo\captures\session_日時\` に保存します。
 `--config` を明示した起動では、相対指定の保存先は設定ファイルの場所を基準にします。
 Recを開始しないセッションには設定と実行要約だけが残り、画像はありません。

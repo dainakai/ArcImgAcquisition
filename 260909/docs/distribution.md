@@ -4,7 +4,8 @@
 
 [Releases](https://github.com/dainakai/ArcImgAcquisition/releases) からOSに合うアーカイブを取得し、書き込み可能な場所へ展開します。
 プライベートリポジトリのReleaseを取得できるのは、リポジトリへのアクセス権を持つユーザーです。
-設定ファイルとアプリを同じ配布フォルダに置いて使います。
+WindowsとLinuxは設定ファイルとアプリを同じ配布フォルダに置いて使います。
+macOSの `.app` には既定の設定も含まれるため、アプリだけを移動しても起動できます。
 
 | 配布名 | 対象 | 起動 |
 |---|---|---|
@@ -21,6 +22,13 @@ Ubuntu 22.04では `sudo apt install libgtk-3-0`、Ubuntu 24.04では `sudo apt 
 macOS版はアドホック署名のみで、Appleの公証とDeveloper ID署名はありません。
 Windows版にもAuthenticode署名はありません。
 OSが起動を確認する場合は、配布元を確認してOSの許可操作を行います。
+
+macOSでFinderから起動した場合、既定の保存先は `~/Pictures/DualHolo/captures` です。
+起動場所やアプリの配置先が読み取り専用でも、このユーザーフォルダへ保存します。
+SDKの不足などで起動できない場合は、エラーをダイアログに表示します。
+独自の設定を確実に指定する場合は、ターミナルから `--config /設定ファイルの絶対パス/config.yml` で起動してください。
+`--config` を明示した場合、相対指定の `output_dir` は従来どおり設定ファイルの場所を基準にします。
+`--output /保存先の絶対パス` で保存先だけを指定することもできます。
 
 実カメラの使用には、同じCPUアーキテクチャに対応する[Spinnaker SDK/runtime](https://www.teledynevisionsolutions.com/products/spinnaker-sdk/)とカメラドライバが必要です。
 C APIライブラリを含むSpinnaker 4.xを想定しています。
@@ -94,13 +102,15 @@ CIは実カメラを使わず、録画、画素値保存、排他ロック、模
 配布フォルダと展開後のアプリでも模擬録画を実行します。
 GUIは指定時間動き続けて複数回描画したことを確認し、正常な終了コードだけで合格にしません。
 LinuxではXvfbとOpenboxを使い、ウィンドウの表示、Rでの録画開始、タイトルバーの「×」による終了と保存待ち画像の書き出しも検証します。
+macOSでは設定ファイルを隣に置かず、読み取り専用の場所に `.app` だけを配置して、Finderと同じ起動経路も検証します。
+この検証では `--config` と `--output` を指定せず、内蔵設定の読み込み、既定の保存先、GUIの継続描画を確認します。
 成果物にはSHA-256と組み込んだライブラリのライセンスを含めます。
 Spinnakerランタイムと実カメラを使った各OSでの取得確認は、このCIの検証範囲外です。
 
 ```sh
-# バージョンは260909/CMakeLists.txtとInfo.plistも更新する。
-git tag v1.2.0
-git push origin v1.2.0
+# バージョンは260909/CMakeLists.txtで更新する。Info.plistにも自動反映される。
+git tag v1.2.2
+git push origin v1.2.2
 ```
 
 `v*`タグの全ビルドとテストが成功すると、4種類のアーカイブをGitHub Releaseへ登録します。

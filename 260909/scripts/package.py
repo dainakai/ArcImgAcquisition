@@ -54,6 +54,9 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_package_") as tmp:
     if sys.platform == "linux":
         gui_command = ["xvfb-run", "-a", *gui_command, "--x11"]
     subprocess.run(gui_command, cwd=unpacked, check=True, timeout=60)
+    if sys.platform == "darwin":
+        subprocess.run([sys.executable, str(source / "tests/test_macos_launch.py"),
+                        str(restored.parents[2])], check=True, timeout=60)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (output / (archive.name + ".sha256")).write_text(f"{digest}  {archive.name}\n", newline="\n")
     print(f"Packaged and verified: {archive.name} ({archive.stat().st_size:,} bytes; {platform.machine()})")

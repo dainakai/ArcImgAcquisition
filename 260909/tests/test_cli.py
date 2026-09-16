@@ -27,6 +27,17 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_cli_") as tmp:
         return int(float(re.search(rf"^{key}:\s*(\S+)", text, re.M)[1]))
 
     run("--help")
+    # Explicit settings keep output relative to the settings file on every OS,
+    # including macOS after changing Finder's default capture directory.
+    settings = root / "settings with spaces" / "custom.yml"
+    settings.parent.mkdir()
+    settings.write_text('%YAML:1.0\noutput_dir: "relative captures"\n')
+    run("--config", str(settings), "--simulate", "--headless", "--seconds", "0.2")
+    session, text = summary(settings.parent / "relative captures")
+    assert counter(text, "recordings") == 0 and not list(session.rglob("*.tiff"))
+    run("--config", str(settings), "--simulate", "--headless", "--seconds", "0.2",
+        "--output", str(root / "override"))
+    summary(root / "override")
     run("--headless", "--record-at", "0", "--seconds", "0.2", success=False)
     run("--simulate", "--headless", "--seconds", "0.5", "--output", str(root / "idle"))
     session, text = summary(root / "idle")

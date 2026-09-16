@@ -1,6 +1,8 @@
-Ubuntu版がカメラ初期化直後に `Finished` と表示して終了する不具合を修正しました。
-GTKで未対応の `WND_PROP_VISIBLE` の戻り値を、ウィンドウが閉じられた状態と誤認していました。
-GTKで対応しているウィンドウ存在確認へ切り替え、タイトルバーの「×」による終了も維持しています。
+macOS版がFinderからの起動直後に終了する不具合を修正しました。
+設定ファイルが見つからない起動環境で、読み取り専用の `/captures` に保存先を作ろうとしていました。
+設定を `.app` に内蔵し、macOSの既定の保存先を `~/Pictures/DualHolo/captures` に変更しました。
+SDKの不足など、ダブルクリック起動時のエラーもダイアログで確認できます。
+UbuntuのGUI即時終了に対するv1.2.1の修正も含みます。
 
 Windows x64、Linux x64、macOS Apple Silicon / Intel向けの撮影アプリです。
 
@@ -9,6 +11,7 @@ Windows x64、Linux x64、macOS Apple Silicon / Intel向けの撮影アプリで
 - SDKなしでも `--simulate` で模擬撮影できます。
 - 起動時Rec OFF。R / Recボタンで録画開始と停止、Nで表示コントラスト、Q / Escで終了します。
 - CIではGUIが指定時間動き続けることを確認します。Linuxはウィンドウの表示、Rによる録画開始、「×」で終了した際の保存完了も検証します。各OSの実カメラ動作は未確認です。
+- macOSは読み取り専用の場所に置いた `.app` 単体をFinder経由で起動し、内蔵設定と既定の保存先でもGUIが動くことを検証します。
 - macOSはアドホック署名のみで未公証、Windowsは未署名です。
 
 詳しい準備と起動方法は、同梱の `distribution.md` を参照してください。

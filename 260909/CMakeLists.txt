@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(dual_holo VERSION 1.2.1 LANGUAGES C CXX)
+project(dual_holo VERSION 1.2.2 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -46,8 +46,14 @@ add_executable(dual_holo src/main.cpp src/cameras.cpp)
 target_link_libraries(dual_holo PRIVATE holo_core holo_runtime)
 holo_warnings(dual_holo)
 if(APPLE)
+  enable_language(OBJCXX)
+  set_source_files_properties(config.yml PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  target_sources(dual_holo PRIVATE src/mac_app.mm config.yml)
+  target_link_libraries(dual_holo PRIVATE "-framework AppKit")
   set_target_properties(dual_holo PROPERTIES MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_BUNDLE_NAME DualHolo
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist")
   set_target_properties(dual_holo PROPERTIES OUTPUT_NAME DualHolo)
 endif()

@@ -1,5 +1,8 @@
 #include "cameras.hpp"
 #include "recorder.hpp"
+#ifdef __APPLE__
+#include "mac_app.hpp"
+#endif
 #include <csignal>
 #include <cmath>
 #include <iomanip>
@@ -12,11 +15,11 @@ volatile std::sig_atomic_t interrupted=0;
 void signalHandler(int) {interrupted=1;}
 void help() {
     std::cout<<"Dual Hologram Viewer (C++ / Spinnaker)\n"
-             <<"  --config FILE       default: config.yml beside the application\n"
+             <<"  --config FILE       default: config.yml beside the application (macOS: bundled fallback)\n"
              <<"  --simulate          synthetic two-camera input; no hardware\n"
              <<"  --headless          no display\n"
              <<"  --seconds N         stop after N seconds (0: unlimited)\n"
-             <<"  --output DIR        override capture root\n"
+             <<"  --output DIR        override capture root (macOS default: ~/Pictures/DualHolo/captures)\n"
              <<"  --record-at N       SIMULATION ONLY: test a REC start after N seconds\n"
              <<"  --record-for N      SIMULATION ONLY: stop the test recording after N seconds\n"
              <<"  --help              this message\n"
@@ -63,20 +66,46 @@ bool windowClosed(int property) {
     }
 }
 }
+void reportError(const std::string& message,bool finder_launch) {
+    std::cerr<<"Error: "<<message<<std::endl;
+#ifdef __APPLE__
+    // Finder does not display stderr. Keep the failure visible on double-click.
+    if(finder_launch) holo::macShowError(message);
+#else
+    (void)finder_launch;
+#endif
+}
 int main(int argc,char** argv) {
     using namespace holo;
     try {
-        Config cfg;bool simulate=false,headless=false;
+        Config cfg;bool simulate=false,headless=false,explicit_config=false;
         double seconds=0,record_at=-1,record_for=-1;
         std::string config=std::filesystem::exists("config.yml")?"config.yml":"";
         if(config.empty()) {
             auto parent=std::filesystem::absolute(argv[0]).parent_path();
             for(int level=0;level<5;++level,parent=parent.parent_path()) if(std::filesystem::exists(parent/"config.yml")) {config=(parent/"config.yml").string();break;}
         }
-        for(int i=1;i<argc;++i) if(std::string(argv[i])=="--config") {if(i+1>=argc) throw std::runtime_error("--config requires a path");config=argv[++i];}
+        for(int i=1;i<argc;++i) if(std::string(argv[i])=="--config") {if(i+1>=argc) throw std::runtime_error("--config requires a path");config=argv[++i];explicit_config=true;}
+#ifdef __APPLE__
+        // Gatekeeper may launch only the .app from a read-only translocated
+        // directory; adjacent config.yml and the original cwd are unavailable.
+        if(config.empty()) config=macBundledConfig();
+#endif
         if(!config.empty()) {
             cfg.read(config);
-            if(std::filesystem::path(cfg.output_dir).is_relative()) cfg.output_dir=(std::filesystem::absolute(config).parent_path()/cfg.output_dir).string();
+            std::cout<<"Config: "<<std::filesystem::absolute(config)<<std::endl;
+        }
+        if(std::filesystem::path(cfg.output_dir).is_relative()) {
+#ifdef __APPLE__
+            // Auto-discovered settings must never write beside a translocated
+            // bundle or into Finder's cwd (/). Explicit --config retains its
+            // existing config-relative output semantics.
+            if(!explicit_config) cfg.output_dir=(std::filesystem::path(macCaptureRoot())/cfg.output_dir).string();
+            else
+#else
+            (void)explicit_config;
+#endif
+            if(!config.empty()) cfg.output_dir=(std::filesystem::absolute(config).parent_path()/cfg.output_dir).string();
         }
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];auto value=[&](){if(i+1>=argc) throw std::runtime_error("Missing value for "+arg);return std::string(argv[++i]);};
@@ -195,7 +224,7 @@ int main(int argc,char** argv) {
         for(int i=0;i<2;++i) stats<<("received_cam"+std::to_string(i))<<static_cast<double>(shared.received[i])
             <<("accepted_cam"+std::to_string(i))<<static_cast<double>(shared.accepted[i])<<("saved_cam"+std::to_string(i))<<static_cast<double>(shared.saved[i])
             <<("incomplete_cam"+std::to_string(i))<<static_cast<double>(shared.incomplete[i])<<("frame_gaps_cam"+std::to_string(i))<<static_cast<double>(shared.frame_gaps[i]);
-        {std::lock_guard<std::mutex> lock(shared.mutex);stats<<"error"<<shared.error;std::cout<<"Finished: "<<session<<std::endl;if(!shared.error.empty()) {std::cerr<<shared.error<<std::endl;return 1;}}
+        {std::lock_guard<std::mutex> lock(shared.mutex);stats<<"error"<<shared.error;std::cout<<"Finished: "<<session<<std::endl;if(!shared.error.empty()) {reportError(shared.error,argc==1);return 1;}}
         return 0;
-    } catch(const std::exception& e) {std::cerr<<"Error: "<<e.what()<<std::endl;return 1;}
+    } catch(const std::exception& e) {reportError(e.what(),argc==1);return 1;}
 }

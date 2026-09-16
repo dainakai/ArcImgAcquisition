@@ -23,6 +23,28 @@ def smoke_test(executable, cwd, config, env):
             raise RuntimeError("Frozen GUI exited before completing its smoke test")
 
 
+def prepare_macos_bundle(bundle, executable, bridge_name):
+    import plistlib
+    # PyInstaller removes external LC_RPATH entries. The SDK is loaded only
+    # after Connect, but its GenICam dependencies still require these paths.
+    bridge = bundle / "Contents" / "Frameworks" / "native" / bridge_name
+    for binary in (executable, bridge):
+        load_commands = subprocess.check_output(["otool", "-l", str(binary)], text=True)
+        for path in ("/Applications/Spinnaker/lib", "/usr/local/lib"):
+            if f"path {path} (offset" not in load_commands:
+                subprocess.run(["install_name_tool", "-add_rpath", path, str(binary)], check=True)
+    info = bundle / "Contents" / "Info.plist"
+    with info.open("rb") as stream:
+        metadata = plistlib.load(stream)
+    metadata.update(CFBundleShortVersionString=__version__, CFBundleVersion=__version__,
+                    CFBundleDisplayName="DualHolo Analyze")
+    with info.open("wb") as stream:
+        plistlib.dump(metadata, stream)
+    # Restore the ad-hoc signatures invalidated by the load-command changes.
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)], check=True)
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
+
+
 def write_launchers(release):
     if os.name == "nt":
         for filename, flags in (("Run.cmd", ""), ("Simulate.cmd", "--simulate ")):
@@ -79,6 +101,8 @@ def main():
     subprocess.run(command, check=True, cwd=root, env=build_env)
     bundle = output / (name + ".app" if sys.platform == "darwin" else name)
     executable = bundle / "Contents" / "MacOS" / name if sys.platform == "darwin" else bundle / (name + (".exe" if os.name == "nt" else ""))
+    if sys.platform == "darwin":
+        prepare_macos_bundle(bundle, executable, args.bridge.name)
     # Execute the frozen app with its embedded configuration, without a camera,
     # and with an empty working directory so missing packaged imports are caught.
     empty = work / "smoke-cwd"

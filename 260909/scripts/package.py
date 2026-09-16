@@ -50,10 +50,10 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_package_") as tmp:
         # zipfile extraction does not restore POSIX modes; Finder/ditto does.
         subprocess.run(["ditto", "-x", "-k", str(archive), str(unpacked)], check=True)
     subprocess.run([sys.executable, str(source / "tests/test_cli.py"), str(restored)], check=True)
-    gui_command = [str(restored), "--simulate", "--seconds", "1", "--output", str(Path(tmp) / "gui-smoke")]
+    gui_command = [sys.executable, str(source / "tests/test_gui.py"), str(restored)]
     if sys.platform == "linux":
-        gui_command = ["xvfb-run", "-a", *gui_command]
-    subprocess.run(gui_command, cwd=unpacked, check=True, timeout=30)
+        gui_command = ["xvfb-run", "-a", *gui_command, "--x11"]
+    subprocess.run(gui_command, cwd=unpacked, check=True, timeout=60)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (output / (archive.name + ".sha256")).write_text(f"{digest}  {archive.name}\n", newline="\n")
     print(f"Packaged and verified: {archive.name} ({archive.stat().st_size:,} bytes; {platform.machine()})")

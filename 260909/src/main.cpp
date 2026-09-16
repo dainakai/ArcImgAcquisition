@@ -45,6 +45,23 @@ struct Controls {
         if(event==cv::EVENT_LBUTTONUP && c.record_button.contains(cv::Point(x,y))) c.toggle=true;
     }
 };
+int closeProperty() {
+    // GTK does not implement WND_PROP_VISIBLE: -1 means unsupported, not closed.
+    if(cv::getWindowProperty(WINDOW,cv::WND_PROP_VISIBLE)>=0) return cv::WND_PROP_VISIBLE;
+    // GTK returns 0/1 for a live normal/autosized window, and -1 once destroyed.
+    if(cv::getWindowProperty(WINDOW,cv::WND_PROP_AUTOSIZE)>=0) return cv::WND_PROP_AUTOSIZE;
+    throw std::runtime_error("The OpenCV GUI backend cannot report window existence");
+}
+bool windowClosed(int property) {
+    try {
+        const double state=cv::getWindowProperty(WINDOW,property);
+        return property==cv::WND_PROP_VISIBLE ? state<1 : state<0;
+    } catch(const cv::Exception& e) {
+        // Some backends report a destroyed window as a null-window exception.
+        if(e.code==cv::Error::StsNullPtr) return true;
+        throw;
+    }
+}
 }
 int main(int argc,char** argv) {
     using namespace holo;
@@ -86,10 +103,15 @@ int main(int argc,char** argv) {
             shared.pairs+=pairer.add(i,std::move(frame)).size();shared.unmatched=pairer.unmatched();
         };
         std::unique_ptr<Cameras> cameras;std::thread simulator;bool gui_open=false;Controls controls;
+        int close_property=cv::WND_PROP_VISIBLE;uint64_t gui_draws=0;int64_t run_started_ns=0;
+        std::string exit_reason="stop_requested";
         try {
             if(!headless) {
                 cv::namedWindow(WINDOW,cv::WINDOW_NORMAL);cv::resizeWindow(WINDOW,cfg.display_width,850);gui_open=true;
                 cv::setMouseCallback(WINDOW,Controls::mouse,&controls);
+                close_property=closeProperty();
+                std::cout<<"GUI: OpenCV "<<CV_VERSION<<", close check="
+                         <<(close_property==cv::WND_PROP_VISIBLE?"visibility":"window existence")<<std::endl;
             }
             if(simulate) {
                 simulator=std::thread([&] {try {
@@ -106,10 +128,11 @@ int main(int argc,char** argv) {
                 } catch(const std::exception& e) {shared.fail(e.what());}});
             } else {cameras=std::make_unique<Cameras>(cfg,shared,session,on_frame);cameras->start();}
             auto start=nowNs(),last_report=start,last_draw=int64_t{0};bool normalized=false,test_started=false,test_stopped=false;
+            run_started_ns=start;
             std::array<uint64_t,2> last_draw_id{},last_report_count{};
             while(!shared.stop && !interrupted) {
                 auto now=nowNs();double elapsed=(now-start)/1e9;
-                if(seconds>0 && elapsed>=seconds) break;
+                if(seconds>0 && elapsed>=seconds) {exit_reason="duration";break;}
                 if(record_at>=0 && elapsed>=record_at && !test_started) {recorder.setRecording(true,"simulation_test");test_started=true;}
                 if(test_started && record_for>=0 && elapsed>=record_at+record_for && !test_stopped) {recorder.setRecording(false,"simulation_test");test_stopped=true;}
                 if(now-last_report>=2'000'000'000LL) {
@@ -145,23 +168,28 @@ int main(int argc,char** argv) {
                         const bool issue=shared.writer_waits>0 || shared.frame_gaps[0]>0 || shared.frame_gaps[1]>0 || shared.incomplete[0]>0 || shared.incomplete[1]>0;
                         std::string metrics="Pairs: "+std::to_string(shared.pairs)+" | Unmatched: "+std::to_string(shared.unmatched)+" | Gaps: "+std::to_string(shared.frame_gaps[0])+" / "+std::to_string(shared.frame_gaps[1])+" | Incomplete: "+std::to_string(shared.incomplete[0])+" / "+std::to_string(shared.incomplete[1])+" | Disk waits: "+std::to_string(shared.writer_waits);
                         cv::putText(canvas,metrics,{16,height+119},cv::FONT_HERSHEY_SIMPLEX,.45,issue?cv::Scalar(80,180,255):cv::Scalar(180,180,180),1,cv::LINE_AA);
-                        cv::imshow(WINDOW,canvas);last_draw=now;
+                        cv::imshow(WINDOW,canvas);last_draw=now;++gui_draws;
                         if(frames[0]&&frames[1]) shared.display_age_ms=(nowNs()-std::min(frames[0]->host_ns,frames[1]->host_ns))/1e6;
                     }
                     int key=cv::waitKey(1)&0xff;
-                    if(key=='q'||key=='Q'||key==27) break;
+                    if(key=='q'||key=='Q'||key==27) {exit_reason="key";break;}
                     if(key=='r'||key=='R'||controls.toggle) {controls.toggle=false;recorder.setRecording(!shared.recording);last_draw=0;}
                     if(key=='n'||key=='N') {normalized=!normalized;last_draw=0;}
-                    if(cv::getWindowProperty(WINDOW,cv::WND_PROP_VISIBLE)<1) break;
+                    if(windowClosed(close_property)) {exit_reason="window_closed";break;}
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-        } catch(const std::exception& e) {shared.fail(e.what());}
+        } catch(const std::exception& e) {exit_reason="error";shared.fail(e.what());}
+        if(interrupted) exit_reason="signal";
+        const double run_seconds=run_started_ns?(nowNs()-run_started_ns)/1e9:0;
         recorder.setRecording(false,"shutdown");shared.stop=true;
         if(simulator.joinable()) simulator.join();if(cameras) cameras->stop();
         recorder.close();if(gui_open) cv::destroyAllWindows();
+        {std::lock_guard<std::mutex> lock(shared.mutex);if(!shared.error.empty()) exit_reason="error";}
+        std::cout<<"Exit reason: "<<exit_reason<<", run_seconds="<<number(run_seconds,3)<<std::endl;
         cv::FileStorage stats((session/"run_summary.yml").string(),cv::FileStorage::WRITE);
-        stats<<"simulation"<<static_cast<int>(simulate)<<"pairs"<<static_cast<double>(shared.pairs)<<"unmatched"<<static_cast<double>(shared.unmatched)
+        stats<<"exit_reason"<<exit_reason<<"run_seconds"<<run_seconds<<"gui_draws"<<static_cast<double>(gui_draws)
+             <<"simulation"<<static_cast<int>(simulate)<<"pairs"<<static_cast<double>(shared.pairs)<<"unmatched"<<static_cast<double>(shared.unmatched)
              <<"recordings"<<static_cast<double>(shared.recordings)<<"writer_waits"<<static_cast<double>(shared.writer_waits)
              <<"pending_frames"<<static_cast<double>(shared.pending_frames)<<"last_display_receive_age_ms"<<shared.display_age_ms.load();
         for(int i=0;i<2;++i) stats<<("received_cam"+std::to_string(i))<<static_cast<double>(shared.received[i])

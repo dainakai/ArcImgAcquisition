@@ -31,10 +31,12 @@ SpinApi::SpinApi() {
         paths.emplace_back("/usr/local/lib/libSpinnaker_C.dylib");
 #else
         paths.emplace_back("/opt/spinnaker/lib/libSpinnaker_C.so");
+        paths.emplace_back("/opt/spinnaker/lib/libSpinnaker_C.so.4");
         paths.emplace_back("/usr/lib/libSpinnaker_C.so");
         paths.emplace_back("/usr/lib/x86_64-linux-gnu/libSpinnaker_C.so");
         paths.emplace_back("/usr/local/lib/libSpinnaker_C.so");
         paths.emplace_back("libSpinnaker_C.so");
+        paths.emplace_back("libSpinnaker_C.so.4");
 #endif
     }
     std::string errors;

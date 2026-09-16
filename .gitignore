@@ -1,0 +1,24 @@
+# Publish the acquisition application only; keep experiments and raw data local.
+/*
+!/.gitignore
+!/AGENTS.md
+!/README.md
+!/.github/
+!/260909/
+/260909/*
+!/260909/.gitignore
+!/260909/CMakeLists.txt
+!/260909/README.md
+!/260909/config.yml
+!/260909/run.command
+!/260909/src/
+!/260909/tests/
+!/260909/cmake/
+!/260909/scripts/
+!/260909/docs/
+/260909/docs/*
+!/260909/docs/manual_rec_validation.md
+!/260909/docs/distribution.md
+.DS_Store
+__pycache__/
+*.pyc

@@ -1,0 +1,6 @@
+build/
+captures/
+validation/
+inspect_cameras
+*.log
+.DS_Store

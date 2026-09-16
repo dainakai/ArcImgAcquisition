@@ -1,0 +1,151 @@
+# 2台の外部トリガカメラでホログラムを表示・録画する
+
+Spinnakerを使うC++17アプリです。
+2台の最新画像を左右に表示し、**Rec開始から停止までに受信した全画像**を原解像度の無圧縮TIFFで保存します。
+起動時はRec OFFで、画像を自動保存しません。
+物体の自動検出、背景の自動学習、検出による自動保存はアプリから削除しました。
+
+## 起動と操作
+
+ビルド済みの `build/DualHolo.app` をダブルクリックします。
+ソースからビルドする場合は `run.command` を使います。
+アプリはこのディレクトリ内に置いたまま使ってください。
+
+```sh
+cd /Users/dai/Documents/repos/ArcImgAcquisition/260909
+./run.command
+```
+
+| 操作 | 動作 |
+|---|---|
+| **RECボタン** または **R** | 録画開始。ボタンが赤いSTOP RECに変わる |
+| **STOP RECボタン** または **R** | 新しい画像の保存を止める。保存待ち画像を書き終え、プレビューを続ける |
+| **N** | 表示コントラストを切り替える。保存画素値は変わらない |
+| **Q / Esc** またはウィンドウを閉じる | 録画を止め、保存待ち画像を書き終えて終了 |
+
+操作案内は画像の下に常時表示します。
+保存枚数はcam0とcam1を別々に表示し、保存待ち枚数と使用バッファ量も表示します。
+背景処理用の画像も必要な場合は、必要な時間だけRecを続けてください。
+録画前・停止後の画像を自動で追加する機能はありません。
+
+## カメラ設定
+
+カメラとSDKストリームの設定は**変更しません**。
+露光、ゲイン、トリガ、ROI、画素形式、ReverseX/Y、バッファ設定を現在値のまま使います。
+機器への操作は初期化、撮影の開始・終了、取得、時計値を読むTimestampLatchに限定します。
+実カメラを開く前に排他ロックを取り、別のDualHoloが使用中ならカメラに触れずに終了します。
+SpinView等の別アプリとはロックを共有しないので、カメラを使用中の別アプリは閉じてください。
+
+| 項目 | cam0 | cam1 |
+|---|---|---|
+| シリアル | 26259157 | 26259158 |
+| 型番 | BFS-U3-50S4M-BD | 同左 |
+| 画像サイズ | 2448 × 2048 | 同左 |
+| ピクセルピッチ | 2.74 µm | 同左 |
+| 保存時の画素形式 | Mono8 | Mono8 |
+| 2026-09-09の露光・ゲイン | 73 µs、0 dB | 同左 |
+| 外部トリガ源 | Counter0Start | Line3 |
+| トリガ遅延 | 80 µs | 79 µs |
+
+cam0のReverseYはユーザー設定で有効です。
+保存画像に既に適用されているため、表示・補正で追加の上下反転をしません。
+cam0/1の名前は光学的な前後関係を表しません。
+両カメラは既に `FrameStart / On` の外部トリガ、`Continuous` の取得モードである必要があります。
+設定が異なる場合は変更せずにエラーを返します。
+`expected_hz` は時計対応の検証と模擬入力に使い、外部トリガの周波数を変更しません。
+
+## 保存形式
+
+既定の保存先は `captures/session_日時/` です。
+Recを開始しないセッションには設定と実行要約だけが残り、画像はありません。
+Recを開始するたびに新しい `recording_日時` を作ります。
+
+```text
+session_YYYYMMDD_HHMMSS_xxxxxx/
+  config.yml
+  camera0.yml
+  camera1.yml
+  run_summary.yml
+  recording_YYYYMMDD_HHMMSS_xxxxxx/
+    frames.csv
+    summary.txt
+    cam0_26259157/
+      frame_000000_id211.tiff
+      frame_000001_id212.tiff
+    cam1_26259158/
+      frame_000000_id208.tiff
+      frame_000001_id209.tiff
+```
+
+**対応する相手の画像が届かなくても、届いた画像は保存します。**
+そのため、保存単位を旧版のペア別フォルダからカメラ別フォルダへ変更しました。
+Rec開始・停止の瞬間が2台の受信の間に来ると、保存枚数が1枚違うことがあります。
+ファイル名の連番だけでカメラ間の対応を判断せず、`frames.csv` の `estimated_exposure_host_ns` を使ってください。
+カメラの生の時刻とフレームIDは、カメラ間で起点が異なります。
+
+`frames.csv` はカメラ番号、連番、フレームID、生のカメラ時刻、受信時刻、推定露光時刻、時計対応の不確かさ、画素形式、保存受付時刻 `record_admitted_ns` を含みます。
+Recの区間はRecorderが開始・停止を受け付けた単調時計で定義し、その間に保存受付した画像を残します。
+単調時計の値はUTCではなく、読み込む際は64 bit整数で扱います。
+取得前のSDKバッファにあった画像の露光時刻と、受信・保存受付時刻は異なります。
+
+TIFFには縮小、コントラスト調整、検出枠、背景処理、幾何補正を適用しません。
+Mono8とMono16の画素値はそのまま保存します。
+それ以外の対応モノクロ形式は、カメラの設定を変えず、SDKでMono16に展開して元形式をCSVへ記録します。
+画像は一時TIFFへ書き終えてから正式名へ変更します。
+全保存画像数を照合し、正常終了した録画だけ `IN_PROGRESS` を削除します。
+取得欠落は `summary.txt` の `capture_gaps` に残し、ディスク障害はアプリを停止して `run_summary.yml` に残します。
+
+保存キューは既定512 MiBで、満杯になったときは画像を捨てずに取得側を待機させます。
+遅いストレージではその待機中にSDK側で欠落し得るため、画面のDisk waits、Gaps、Incompleteで確認できます。
+保存済みと受付済みの差も実行要約に残ります。
+現設定の連続録画量は2台合計で約100 MB/s、約6 GB/分です。
+
+## 表示と時刻対応
+
+GUIは各カメラの最新画像を表示し、古い画像を順に再生しません。
+そのため、左右が一時的に別トリガの画像になる場合があります。
+保存はGUIの描画頻度やペア成立に依存しません。
+
+`TimestampLatch` で各カメラの時計をホストの時計に対応させ、推定露光時刻でペア数を計算します。
+時計は30秒ごとに再較正し、欠落時に次のトリガと対応させないようにします。
+これは電気的同期を証明するものではありません。
+画面のReceived時間はSDKから受信して以降の経過時間で、センサ読出しやUSB転送、ディスプレイ発光までの全遅延ではありません。
+
+## 画像補正と光伝搬
+
+最新の再計算結果は [calibration_4096/README.md](registration/calibration_4096/README.md) です。
+距離探索・Gabor再生の光伝搬は、元の入力場を中央に置いた4096 × 4096配列で行い、周囲を入力場の平均値で埋めます。
+Gaborでは `U0 = sqrt(I)` の平均振幅を使います。
+この方針はリポジトリ直下の [AGENTS.md](../AGENTS.md) に記録しました。
+
+保存画像の補正は、サブピクセルのfloat座標マップとLanczos4を既定にしています。
+既に補正した画像に繰り返し適用しないでください。
+
+```sh
+registration/.venv/bin/python registration/fast_correction.py \
+  original_cam1.tiff corrected_cam1.tiff
+```
+
+出力はfloat32 TIFFです。
+このアプリの録画画像は生データであり、光伝搬・幾何補正・GS位相回復はオフライン処理です。
+
+## ビルドと検証
+
+使用環境はApple Silicon版Spinnaker 4.4.0.246、OpenCV 5.0.0、CMake、Apple Clangです。
+SDKは `/Applications/Spinnaker`、OpenCVは `/opt/homebrew/opt/opencv` にあります。
+追加のSDK取得は不要です。
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 4
+ctest --test-dir build --output-on-failure
+./build/dual_holo --simulate --seconds 30
+./build/dual_holo --simulate --headless --seconds 2 --record-at 0.3 --record-for 0.9 --output validation/test_rec
+registration/.venv/bin/python registration/test_optical_padding.py
+```
+
+`--record-at` / `--record-for` は模擬入力専用の検証オプションです。
+実カメラでは受け付けません。
+旧版の `--calibrate`、`--no-auto`、`--manual-at`、`--post`、`--background` とB/S/A操作は削除しました。
+以前の検出方式の説明と検証記録は履歴として残しています。
+今回の検証は [manual_rec_validation.md](docs/manual_rec_validation.md) に記録します。

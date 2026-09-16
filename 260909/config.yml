@@ -1,0 +1,15 @@
+%YAML:1.0
+# Serial order defines camera names. Camera parameters are read-only.
+serial0: "26259157"
+serial1: "26259158"
+output_dir: "captures"
+pixel_format: "keep"
+expected_hz: 10.0
+pair_tolerance_ms: 8.0
+max_clock_uncertainty_ms: 3.0
+capture_queue: 12
+# Raw-frame FIFO: backpressure at this size; no deliberate writer drops.
+writer_queue_mb: 512
+opencv_threads: 4
+display_width: 1500
+# Always starts in preview mode. Click REC or press R to save all received frames.

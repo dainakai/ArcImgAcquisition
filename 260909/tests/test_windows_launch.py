@@ -118,7 +118,10 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_windows_") as tmp:
                     assert "missing-sdk.dll" in saved_error and "Windows error" in saved_error, saved_error
                 time.sleep(0.5)
                 assert process.poll() is None and user32.IsWindowVisible(dialog), "Error vanished before acknowledgement"
-                user32.PostMessageW(dialog, 0x0111, 1, 0)  # WM_COMMAND / IDOK
+                # Dismiss through the title-bar close action. A synthetic
+                # WM_COMMAND without a real button notification can be ignored
+                # by the native MessageBox implementation on Windows Server.
+                assert user32.PostMessageW(dialog, 0x0010, 0, 0), ctypes.get_last_error()  # WM_CLOSE
                 assert process.wait(timeout=5) == 1
                 log.seek(0)
                 stdout = log.read()
@@ -126,6 +129,11 @@ with tempfile.TemporaryDirectory(prefix="dual_holo_windows_") as tmp:
                     shutil.rmtree(session_from(stdout))
                 error_file.unlink()
                 print(f"Explorer-style {case}: visible persistent error, complete log, nonzero exit verified")
+            except Exception:
+                log.seek(0)
+                print(log.read(), flush=True)
+                print("Remaining error windows:", windows("DualHolo - Startup error", process.pid), flush=True)
+                raise
             finally:
                 if process.poll() is None:
                     process.kill()

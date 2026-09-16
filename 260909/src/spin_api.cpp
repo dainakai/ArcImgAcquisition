@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
+#include <system_error>
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
@@ -43,7 +44,11 @@ SpinApi::SpinApi() {
     for(const auto& path:paths) {
 #ifdef _WIN32
         library_=LoadLibraryExW(path.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if(!library_) errors+=path.string()+": Windows error "+std::to_string(GetLastError())+"\n";
+        if(!library_) {
+            const auto error=GetLastError();
+            errors+=path.string()+": Windows error "+std::to_string(error)+" ("+
+                std::system_category().message(static_cast<int>(error))+")\n";
+        }
 #else
         library_=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);
         if(!library_) {const char* err=dlerror();errors+=path.string()+": "+(err?err:"load failed")+"\n";}

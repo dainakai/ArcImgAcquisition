@@ -9,7 +9,7 @@ macOSの `.app` には既定の設定も含まれるため、アプリだけを�
 
 | 配布名 | 対象 | 起動 |
 |---|---|---|
-| `windows-x64.zip` | Windows 10/11 x64 | `dual_holo.exe` |
+| `windows-x64.zip` | Windows 10/11 x64 | `Run.cmd` または `dual_holo.exe` |
 | `linux-x64.tar.gz` | Ubuntu 22.04以降のx64 | `./run.sh` |
 | `macos-arm64.zip` | macOS 13以降、Apple Silicon | `DualHolo.app` |
 | `macos-x64.zip` | macOS 13以降、Intel | `DualHolo.app` |
@@ -29,6 +29,16 @@ SDKの不足などで起動できない場合は、エラーをダイアログ�
 独自の設定を確実に指定する場合は、ターミナルから `--config /設定ファイルの絶対パス/config.yml` で起動してください。
 `--config` を明示した場合、相対指定の `output_dir` は従来どおり設定ファイルの場所を基準にします。
 `--output /保存先の絶対パス` で保存先だけを指定することもできます。
+
+WindowsはZIPを「すべて展開」してから、まず `Simulate.cmd` でGUIを確認します。
+これはSDKとカメラがなくても動きます。
+実カメラ用の `Run.cmd` は、失敗した際にコンソールを残します。
+`dual_holo.exe` のダブルクリック起動で失敗した場合も、エラーダイアログが残ります。
+詳細ログは `%LOCALAPPDATA%\DualHolo\logs\startup-error-*.txt` に保存され、ダイアログにもログの場所が表示されます。
+ログには実行ファイルの場所、作業フォルダ、SDKの探索先やWindowsのエラー理由を残します。
+問い合わせ時は表示されたエラー、またはこのログを確認してください。
+Windowsの既定の保存先は、ユーザーの「ピクチャ」フォルダ内の `DualHolo\captures` です。
+`--config` を明示した場合の相対パスと、`--output` による上書きはmacOSと同じです。
 
 実カメラの使用には、同じCPUアーキテクチャに対応する[Spinnaker SDK/runtime](https://www.teledynevisionsolutions.com/products/spinnaker-sdk/)とカメラドライバが必要です。
 C APIライブラリを含むSpinnaker 4.xを想定しています。
@@ -104,13 +114,15 @@ GUIは指定時間動き続けて複数回描画したことを確認し、正�
 LinuxではXvfbとOpenboxを使い、ウィンドウの表示、Rでの録画開始、タイトルバーの「×」による終了と保存待ち画像の書き出しも検証します。
 macOSでは設定ファイルを隣に置かず、読み取り専用の場所に `.app` だけを配置して、Finderと同じ起動経路も検証します。
 この検証では `--config` と `--output` を指定せず、内蔵設定の読み込み、既定の保存先、GUIの継続描画を確認します。
+Windowsでは配布された `Simulate.cmd` と `Run.cmd --simulate` からGUIを表示し、保存先指定なしの起動も検証します。
+SDKが見つからない場合と設定が不正な場合は、実カメラに触れずにエラーダイアログ、詳細ログ、失敗の終了コードまで確認します。
 成果物にはSHA-256と組み込んだライブラリのライセンスを含めます。
 Spinnakerランタイムと実カメラを使った各OSでの取得確認は、このCIの検証範囲外です。
 
 ```sh
 # バージョンは260909/CMakeLists.txtで更新する。Info.plistにも自動反映される。
-git tag v1.2.2
-git push origin v1.2.2
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
 `v*`タグの全ビルドとテストが成功すると、4種類のアーカイブをGitHub Releaseへ登録します。

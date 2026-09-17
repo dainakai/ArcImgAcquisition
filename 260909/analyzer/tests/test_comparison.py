@@ -50,15 +50,18 @@ def test_comparison_matches_independent_reconstructions_and_recovers_phase_once(
             np.testing.assert_allclose(getattr(rendered[key], variant), getattr(reference, variant), rtol=1e-5)
     # One display range across both modes and filter states; neither view
     # silently renormalizes itself when toggled.
-    limits = (min(np.percentile(r.filtered, 1) for r in rendered.values()),
-              max(np.percentile(r.filtered, 99) for r in rendered.values()))
+    limits = (min(np.percentile(r.filtered.astype(np.float64), 1) for r in rendered.values()),
+              max(np.percentile(r.filtered.astype(np.float64), 99) for r in rendered.values()))
     linear_max = max(a.max() for r in rendered.values() for a in (r.filtered, r.unfiltered))
     for r in rendered.values():
         for filtered in (False, True):
             source = r.filtered if filtered else r.unfiltered
             for normalized, (lo, hi) in ((True, limits), (False, (0, linear_max))):
-                expected = np.rint(np.clip((source-lo)/(hi-lo), 0, 1)*255).astype(np.uint8)
-                np.testing.assert_array_equal(r.pixels(filtered, normalized), expected)
+                expected = np.clip((source.astype(np.float64)-lo)/(hi-lo), 0, 1)*255
+                # Check nearest-level quantization against a float64 reference.
+                # A float32 scaling step can land on either side of n + 0.5;
+                # bit equality between independently rounded arrays is invalid.
+                np.testing.assert_allclose(r.pixels(filtered, normalized), expected, rtol=0, atol=.5001)
     curve = list(result.curve)
     comparison.render(2, cancel)
     assert calls == [1] and result.curve == curve

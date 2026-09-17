@@ -70,11 +70,19 @@ class ImageView(QGraphicsView):
         tip(self, "ホイールで拡大・縮小、ドラッグで移動できます。スクロールバーで縦横に移動できます。画像の縦横比は保持します。")
 
     def set_pixels(self, pixels):
+        preserve = (not self.fitted and self.pixels is not None and self.pixels.shape == pixels.shape)
+        if preserve:
+            transform = self.transform()
+            x, y = self.horizontalScrollBar().value(), self.verticalScrollBar().value()
         self.pixels = pixels
         self.item.setPixmap(QPixmap.fromImage(qimage(pixels)))
         self.scene().setSceneRect(self.item.boundingRect())
         if self.fitted:
             self.fit_image()
+        elif preserve:
+            self.setTransform(transform)
+            self.horizontalScrollBar().setValue(x)
+            self.verticalScrollBar().setValue(y)
 
     def set_image(self, image, normalize=True, limits=None, live=False):
         stride = max(1, int(np.ceil(max(image.shape)/1000))) if live else 1

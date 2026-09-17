@@ -5,12 +5,14 @@ import time
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
-    QComboBox, QSpinBox, QScrollArea, QSplitter, QTabWidget, QMenu, QFileDialog, QApplication)
+    QComboBox, QSpinBox, QScrollArea, QSplitter, QTabWidget, QMenu, QFileDialog, QApplication, QButtonGroup)
 from .calibration import Calibration, CalibrationPreview, build_from_focused, separation_from_focus
 from .data import Frame, ImagePair, load_pair, read_image, fingerprint, save_result
 from .engine import analyze, depths, Cancelled
 from .depth_view import DepthViewer
 from .widgets import ImagePanel, VectorPlot, button, number, tip, qimage
+
+MODE_LABELS = {"gabor_cam0": "cam0 Gabor", "gabor_cam1": "cam1 Gabor", "phase": "位相回復"}
 
 
 class Workspace(QWidget):
@@ -170,7 +172,7 @@ def sidebar():
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-    scroll.setMinimumWidth(277)
+    scroll.setMinimumWidth(300)
     scroll.setMaximumWidth(335)
     scroll.setWidget(content)
     return scroll, layout
@@ -209,6 +211,8 @@ class AcquisitionWorkspace(Workspace):
     def __init__(self, main):
         super().__init__(main)
         self.analysis_metadata = None
+        self.comparison_renders = None
+        self.display_mode = "gabor_cam0"
         split = QSplitter(Qt.Orientation.Horizontal)
         self.root.addWidget(split, 1)
         scroll, controls = sidebar()
@@ -220,8 +224,14 @@ class AcquisitionWorkspace(Workspace):
         for box in (setup_controls, depth_controls):
             box.setContentsMargins(6, 10, 6, 6)
             box.setSpacing(12)
-        self.control_tabs.addTab(setup_page, "解析条件")
-        self.control_tabs.addTab(depth_page, "深度・保存")
+        # Scroll each page independently: the taller, hidden setup form must
+        # not push the depth page's Save button below a small window.
+        for page, label in ((setup_page, "解析条件"), (depth_page, "深度・保存")):
+            page_scroll = QScrollArea()
+            page_scroll.setWidgetResizable(True)
+            page_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            page_scroll.setWidget(page)
+            self.control_tabs.addTab(page_scroll, label)
         self.control_tabs.setTabToolTip(0, "再生モードと探索範囲を指定してAnalyzeを実行します。")
         self.control_tabs.setTabToolTip(1, "深度を選んで再生し、表示画像をコピー・保存します。")
         controls = setup_controls
@@ -230,12 +240,12 @@ class AcquisitionWorkspace(Workspace):
         self.mode.addItem("Gabor · cam0", "gabor_cam0")
         self.mode.addItem("Gabor · cam1", "gabor_cam1")
         self.mode.addItem("位相回復 · 2カメラ", "phase")
-        tip(self.mode, "cam0・cam1の単画像Gabor再生、または2面GS位相回復を選びます。位相回復にはキャリブレーションタブでの画像変換の適用が必要です。")
+        tip(self.mode, "Tamura探索のモードを選びます。キャリブレーション適用後はcam0 Gabor・位相回復のどちらでAnalyzeしても、比較用の両再生像を準備します。GSはAnalyze時に一度実行します。")
         self.mode.currentIndexChanged.connect(self.mode_changed)
         controls.addWidget(self.mode)
         self.minimum, self.maximum, self.step, self.iterations = scan_controls(main.config, controls)
         self.analyze_button = button("Analyze · 深度探索", self.start_analysis,
-            "元画像サイズ・パディングなしでTamura曲線を計算します。位相回復では最初にGSを実行します。画像スタックは保持せず、選んだ深度を平均値パディングで再生します。途中停止できます。")
+            "選択モードのTamura曲線をパディングなしで計算します。互換キャリブレーションがあるcam0 Gabor／位相回復ではGSを一度実行し、表示比較用に両方を準備します。画像スタックは保持せず、途中停止できます。")
         controls.addWidget(self.analyze_button)
         self.calibration_label = instruction("キャリブレーション未適用")
         controls.addWidget(self.calibration_label)
@@ -245,6 +255,26 @@ class AcquisitionWorkspace(Workspace):
         self.copy_button = button("表示画像をコピー", self.copy_image, "現在の再生画像を、表示中のコントラストでクリップボードへコピーします。")
         self.save_button = button("再生画像を保存…", self.save_image, "現在の深度の再生画像を保存します。TIFFはfloat32強度、PNGは表示コントラストです。再生条件JSONとTamura曲線CSVも保存します。")
         self.viewer = DepthViewer("再生画像", layout_mode="external")
+        comparison_bar = QWidget()
+        comparison_layout = QHBoxLayout(comparison_bar)
+        comparison_layout.setContentsMargins(0, 0, 0, 4)
+        comparison_layout.setSpacing(10)
+        comparison_layout.addWidget(QLabel("表示切替"))
+        self.comparison_group = QButtonGroup(self)
+        self.comparison_buttons = {}
+        for mode in ("gabor_cam0", "phase"):
+            control = button(MODE_LABELS[mode], lambda checked=False, mode=mode: self.set_display_mode(mode),
+                "同じ深度・拡大率・スクロール位置・明暗範囲でcam0 Gaborと位相回復を切り替えます。互換キャリブレーションを適用してAnalyzeを実行してください。")
+            control.setCheckable(True)
+            control.setMinimumWidth(110)
+            self.comparison_group.addButton(control)
+            self.comparison_buttons[mode] = control
+            comparison_layout.addWidget(control)
+        comparison_layout.addStretch()
+        self.viewer.panel.layout().insertWidget(0, comparison_bar)
+        self.curve_mode_label = instruction("Tamura：Analyzeで選んだモード")
+        tip(self.curve_mode_label, "表示切替は再生像だけを切り替えます。曲線とピーク候補はAnalyzeで選んだモードの結果です。別モードの曲線を求める場合は解析条件で選んでAnalyzeを実行してください。")
+        depth_controls.addWidget(self.curve_mode_label)
         depth_controls.addWidget(self.viewer.details)
         depth_controls.addStretch()
         depth_controls.addWidget(self.copy_button)
@@ -261,10 +291,54 @@ class AcquisitionWorkspace(Workspace):
         split.setStretchFactor(2, 2)
         split.setSizes([285, 340, 800])
 
+    def clear_results(self):
+        super().clear_results()
+        self.analysis_metadata = None
+        self.comparison_renders = None
+        self.display_mode = self.mode.currentData()
+        self.viewer.base_title = MODE_LABELS[self.display_mode]
+        self.viewer.panel.title.setText(self.viewer.base_title)
+        self.curve_mode_label.setText("Tamura：Analyzeで選んだモード")
+
     def mode_changed(self):
         self.clear_results()
-        self.analysis_metadata = None
         self.main.update_controls()
+
+    def comparison_reason(self):
+        reason = self.main.phase_reason(self.pair)
+        if reason:
+            return reason
+        if self.viewer.analysis is None or self.viewer.analysis.comparison is None:
+            return "cam0 Gaborまたは位相回復でAnalyzeを実行すると、同じ深度で比較できます。"
+        if self.comparison_renders is None:
+            return "比較する両再生像の計算完了を待ってください。"
+        return ""
+
+    def set_display_mode(self, mode):
+        if mode not in self.comparison_buttons or self.comparison_reason():
+            self.main.update_controls()
+            return
+        self.display_mode = mode
+        self.viewer.base_title = MODE_LABELS[mode]
+        self.viewer.show_render(self.comparison_renders[mode])
+        self.main.update_controls()
+
+    def request_depth(self, viewer):
+        comparison = viewer.analysis.comparison if viewer.analysis is not None else None
+        if comparison is None:
+            return super().request_depth(viewer)
+        if viewer.pending_depth is None:
+            return
+        if self.main.worker is not None:
+            if self.main.kind == "深度再生" and self.main.owner is self:
+                self.main.worker.cancel()
+            return
+        z = viewer.pending_depth
+        def done(renders):
+            if viewer.pending_depth == z:
+                self.comparison_renders = renders
+                viewer.accept_render(renders[self.display_mode])
+        self.main.submit(self, "深度再生", lambda c, p: comparison.render(z, c), done)
 
     def set_pair(self, pair, note="画像を読み込みました。"):
         super().set_pair(pair, note)
@@ -282,7 +356,14 @@ class AcquisitionWorkspace(Workspace):
             self.pair.frames[0 if mode == "gabor_cam0" else 1] is not None)
         self.analyze_button.setEnabled(not busy and ready)
         self.mode.setEnabled(not busy)
-        self.iterations.setEnabled(mode == "phase" and not busy)
+        self.iterations.setEnabled((mode == "phase" or (mode == "gabor_cam0" and not reason)) and not busy)
+        comparison_reason = self.comparison_reason()
+        self.comparison_group.setExclusive(False)
+        for key, control in self.comparison_buttons.items():
+            control.setChecked(key == self.display_mode)
+            control.setEnabled(not comparison_reason)
+            tip(control, comparison_reason or "同じ深度・拡大率・スクロール位置・明暗範囲で、計算済みの再生像を即時切替します。Tamura曲線はAnalyze時のモードを保持します。")
+        self.comparison_group.setExclusive(True)
         can_export = self.viewer.rendered is not None and self.viewer.pending_depth is None
         self.copy_button.setEnabled(can_export)
         self.save_button.setEnabled(can_export and not busy)
@@ -306,11 +387,14 @@ class AcquisitionWorkspace(Workspace):
                 raise ValueError(self.main.phase_reason(self.pair))
             config = self.scan_config()
             pair, calibration = self.pair, self.main.calibration
+            compare = mode in ("gabor_cam0", "phase") and not self.main.phase_reason(pair)
             self.clear_results()
             self.analysis_metadata = dict(mode=mode, config=asdict(config), input_token=pair.token,
-                iterations=config.gs_iterations, calibration=calibration.metadata if mode == "phase" else None)
+                iterations=config.gs_iterations, comparison_prepared=compare,
+                calibration=calibration.metadata if compare or mode == "phase" else None)
+            self.curve_mode_label.setText(f"Tamura：{MODE_LABELS[mode]}")
             self.main.submit(self, "Analyze", lambda c, p: analyze(pair, mode, config, calibration,
-                config.gs_iterations, scan, c, p), self.analysis_done)
+                config.gs_iterations, scan, c, p, compare=compare), self.analysis_done)
         except Exception as exc:
             self.main.notify(str(exc))
 
@@ -324,6 +408,7 @@ class AcquisitionWorkspace(Workspace):
         self.control_tabs.setCurrentIndex(1)
         self.main.notify(("途中までの結果を保持しました。" if result.stopped else "深度探索が完了しました。")+
             " スライダー・曲線クリックで選んだ深度を平均値パディングで再生します。"+
+            (" 再生像上部でcam0 Gabor／位相回復を同じ位置で切り替えられます。" if result.comparison else "")+
             (" 山型ピークがないため、焦点は自動確定していません。" if not result.peaks_filtered else ""))
 
     def copy_image(self):
@@ -337,7 +422,7 @@ class AcquisitionWorkspace(Workspace):
             return
         filtered = viewer.filtered.isChecked()
         rendered, pair = viewer.rendered, self.pair
-        default = self.main.session.default_result(pair, self.analysis_metadata['mode'], rendered.z_mm, filtered)
+        default = self.main.session.default_result(pair, self.display_mode, rendered.z_mm, filtered)
         try:
             self.main.session.ensure(self.main.config)
             default.parent.mkdir(parents=True, exist_ok=True)
@@ -352,7 +437,8 @@ class AcquisitionWorkspace(Workspace):
         image = rendered.filtered if filtered else rendered.unfiltered
         pixels = viewer.panel.view.pixels.copy()
         curve = list(viewer.analysis.curve)
-        metadata = dict(self.analysis_metadata, z_mm=rendered.z_mm, filtered=filtered,
+        metadata = dict(self.analysis_metadata, mode=self.display_mode, tamura_mode=self.analysis_metadata['mode'],
+            z_mm=rendered.z_mm, filtered=filtered,
             scan_stopped=viewer.analysis.stopped, padding="centered mean of input field",
             gs_bandlimit=False, tamura_padding="none; native input dimensions", contrast_normalized=viewer.normalize,
             sources=[f.path if f else None for f in pair.frames])

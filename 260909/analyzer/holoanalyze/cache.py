@@ -14,17 +14,19 @@ class Render:
     filtered: np.ndarray
     unfiltered: np.ndarray
     previews: np.ndarray | None = None
+    linear_limits: tuple | None = None
 
-    def prepare_preview(self):
+    def prepare_preview(self, limits=None):
         if self.previews is None:
-            limits = np.percentile(self.filtered, [1, 99])
+            if limits is None:
+                limits = np.percentile(self.filtered, [1, 99])
             self.previews = np.stack([display_pixels(a, limits) for a in (self.filtered, self.unfiltered)])
         return self
 
     def pixels(self, filtered=True, normalize=True):
         if normalize:
             return self.prepare_preview().previews[0 if filtered else 1]
-        limits = (0, max(float(self.filtered.max()), float(self.unfiltered.max())))
+        limits = self.linear_limits or (0, max(float(self.filtered.max()), float(self.unfiltered.max())))
         return display_pixels(self.filtered if filtered else self.unfiltered, limits)
 
     @property

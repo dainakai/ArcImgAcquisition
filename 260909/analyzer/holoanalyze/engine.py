@@ -123,18 +123,63 @@ class Reconstruction:
         self.field = field
         self.spectrum = self.crop = None
 
+    def prepare(self, cancel):
+        if self.spectrum is None:
+            self.spectrum, self.crop = self.propagator.spectrum(self.field, cancel)
+
     def render(self, z_mm, cancel):
         key = float(z_mm)
         cancel.check()
         prop = self.propagator
         # Prepare the display FFT lazily, after the inexpensive native scan.
         # Retain the input spectrum, never a stack of reconstructed images.
-        if self.spectrum is None:
-            self.spectrum, self.crop = prop.spectrum(self.field, cancel)
+        self.prepare(cancel)
         filtered, unfiltered = render_intensities(prop, self.spectrum, self.crop, key, cancel)
         result = Render(key, filtered, unfiltered).prepare_preview()
         cancel.check()
         return result
+
+
+class ComparisonReconstruction:
+    """Cam0 zero phase and recovered phase on one optical grid, one depth at a time."""
+    def __init__(self, gabor, phase):
+        if gabor.field.shape != phase.field.shape:
+            raise ValueError("Comparison requires the same cam0 image region")
+        self.reconstructions = {"gabor_cam0": gabor, "phase": phase}
+        # Identical optics: share the phase grid and evaluate each transfer once.
+        phase.propagator = gabor.propagator
+
+    def render(self, z_mm, cancel):
+        cancel.check()
+        for reconstruction in self.reconstructions.values():
+            reconstruction.prepare(cancel)
+        prop = self.reconstructions["gabor_cam0"].propagator
+        transfer = prop.transfer(z_mm, cancel, filtered=False)
+        unfiltered = {}
+        for mode, reconstruction in self.reconstructions.items():
+            u = prop.from_spectrum(reconstruction.spectrum, transfer, reconstruction.crop, cancel)
+            unfiltered[mode] = (np.abs(u)**2).astype(np.float32)
+            del u
+        filtered = unfiltered
+        if not prop.band.full_pass(z_mm):
+            for start in range(0, prop.shape[0], 128):
+                cancel.check()
+                rows = slice(start, start+128)
+                transfer[rows] *= prop.band.window(z_mm, rows)
+            filtered = {}
+            for mode, reconstruction in self.reconstructions.items():
+                u = prop.from_spectrum(reconstruction.spectrum, transfer, reconstruction.crop, cancel)
+                filtered[mode] = (np.abs(u)**2).astype(np.float32)
+                del u
+        # Common display scaling makes a toggle compare the fields, including
+        # when contrast normalization is disabled with N. No depth stack is kept.
+        percentiles = [np.percentile(a, [1, 99]) for a in filtered.values()]
+        limits = (min(p[0] for p in percentiles), max(p[1] for p in percentiles))
+        linear = (0, max(float(a.max()) for a in (*filtered.values(), *unfiltered.values())))
+        results = {mode: Render(float(z_mm), filtered[mode], unfiltered[mode], linear_limits=linear).prepare_preview(limits)
+                   for mode in self.reconstructions}
+        cancel.check()
+        return results
 
 
 def render_intensities(prop, spectrum, crop, key, cancel):
@@ -195,10 +240,13 @@ class Analysis:
     stopped: bool = False
     peaks_filtered: list = field(default_factory=list)
     peaks_unfiltered: list = field(default_factory=list)
+    comparison: ComparisonReconstruction | None = None
 
 
-def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress):
+def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress, compare=False):
     cancel.check()
+    if compare and (mode not in ("gabor_cam0", "phase") or calibration is None):
+        raise ValueError("cam0 Gabor／位相回復の比較には適用済みキャリブレーションが必要です")
     if mode == "phase":
         if calibration is None:
             raise ValueError("Phase recovery requires a compatible calibration")
@@ -208,8 +256,15 @@ def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress)
         if pair.frames[index] is None:
             raise ValueError(f"cam{index} の画像を読み込んでください")
         field = np.sqrt(intensity_input(pair.frames[index].image, config.padding_size))
-    progress(f"Tamura用 {field.shape[1]} × {field.shape[0]} スペクトルを準備（パディングなし）", 0, 0, None)
     result = Analysis(Reconstruction(field, config, cancel))
+    if compare:
+        if mode == "phase":
+            gabor = Reconstruction(np.sqrt(intensity_input(pair.frames[0].image, config.padding_size)), config, cancel)
+            result.comparison = ComparisonReconstruction(gabor, result.reconstruction)
+        else:
+            phase = Reconstruction(phase_recover(pair, calibration, config, iterations, cancel, progress), config, cancel)
+            result.comparison = ComparisonReconstruction(result.reconstruction, phase)
+    progress(f"Tamura用 {field.shape[1]} × {field.shape[0]} スペクトルを準備（パディングなし）", 0, 0, None)
     prop = Propagator(config, native_shape=field.shape)
     spectrum, crop = prop.spectrum(field, cancel)
     try:

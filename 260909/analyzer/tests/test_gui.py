@@ -1,6 +1,7 @@
 from dataclasses import replace
 import time
 import numpy as np
+import pytest
 from PySide6.QtCore import QTimer, Qt, QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider, QStyleOptionSpinBox, QStyle
@@ -36,7 +37,7 @@ def test_offline_window_really_closes(app, tmp_path):
     assert w.isVisible() and w.camera is None
     assert w.tabs.count() == 2
     assert not any('Rec' in b.text() for b in w.findChildren(QPushButton))
-    for cls in (QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider, QStyleOptionSpinBox, QStyle):
+    for cls in (QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider):
         assert all(widget.toolTip() for widget in w.findChildren(cls))
     close(app, w)
 
@@ -156,7 +157,7 @@ def test_latest_depth_wins_recompute_plot_toggle_clipboard_and_resume(app, tmp_p
     assert viewer.pending_depth == 40.1
     wait(app, lambda: w.worker is None)
     assert viewer.rendered.z_mm == 40.1
-    viewer.depth_step.setCurrentIndex(1)
+    viewer.depth_step.setCurrentIndex(viewer.depth_step.findData(1.))
     QTest.keyClick(viewer.depth, Qt.Key.Key_Down)
     assert viewer.pending_depth == 39.1
     wait(app, lambda: w.worker is None)
@@ -233,3 +234,35 @@ def test_stopped_scan_does_not_start_display_work(app, tmp_path):
     assert w.worker is None and not reconstruction.calls
     assert w.acquisition.viewer.depth.isEnabled()
     close(app, w)
+
+
+def test_depth_step_row_is_separated_and_all_four_arrow_steps_render_immediately(app, tmp_path):
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
+    w.resize(1280, 800)
+    w.show()
+    a, viewer = w.acquisition, w.acquisition.viewer
+    a.control_tabs.setCurrentIndex(1)
+    reconstruction = FakeReconstruction()
+    viewer.set_analysis(Analysis(reconstruction))
+    viewer.select_depth(40)
+    try:
+        wait(app, lambda: w.worker is None)
+        for v in (viewer, *w.calibration_tab.viewers):
+            assert [v.depth_step.itemData(i) for i in range(v.depth_step.count())] == [.1, .2, 1., 2.]
+        lower = viewer.depth.mapToGlobal(viewer.depth.rect().bottomLeft()).y()
+        upper = viewer.depth_step.mapToGlobal(viewer.depth_step.rect().topLeft()).y()
+        assert upper-lower >= 8, 'The step selector must be below, separated from the depth arrows'
+        value = 40
+        for step in (.1, .2, 1., 2.):
+            viewer.depth_step.setCurrentIndex(viewer.depth_step.findData(step))
+            option = QStyleOptionSpinBox()
+            viewer.depth.initStyleOption(option)
+            up = viewer.depth.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option,
+                                                     QStyle.SubControl.SC_SpinBoxUp, viewer.depth)
+            QTest.mouseClick(viewer.depth, Qt.MouseButton.LeftButton, pos=up.center())
+            value += step
+            assert viewer.pending_depth == pytest.approx(value) and w.worker is not None
+            wait(app, lambda: w.worker is None)
+            assert viewer.rendered.z_mm == pytest.approx(value)
+    finally:
+        close(app, w)

@@ -71,8 +71,8 @@ class NumpyAngularSpectrumBandlimit:
     """
     def __init__(self, side, pitch_um, wavelength_um, taper_fraction=.05, nyquist_guard=1e-6):
         import numpy as np
-        if side != 4096:
-            raise ValueError('Optical propagation must use 4096 x 4096')
+        if isinstance(side, bool) or not isinstance(side, int) or not 16 <= side <= 8192:
+            raise ValueError('Invalid explicitly selected optical grid')
         if not all(math.isfinite(v) and v > 0 for v in (pitch_um, wavelength_um)):
             raise ValueError('Invalid optical sampling')
         if not 0 < taper_fraction < 1 or not 0 < nyquist_guard < .01:
@@ -85,6 +85,13 @@ class NumpyAngularSpectrumBandlimit:
         self.taper_fraction = taper_fraction
         if wavelength_um**-2 <= 2 * np.max(self.f**2):
             raise ValueError('Non-propagating spatial frequencies are unsupported')
+
+    def full_pass(self, z_mm):
+        """Exact worst-case q over the square sampled grid, including its corners."""
+        import numpy as np
+        fmax = float(np.max(np.abs(self.f)))
+        qmax = 2000*abs(float(z_mm))*fmax/self.extent_um/math.sqrt(self.wavelength_um**-2-2*fmax*fmax)
+        return qmax <= self.safe_ratio*(1-self.taper_fraction)
 
     def window(self, z_mm, rows=slice(None)):
         import numpy as np

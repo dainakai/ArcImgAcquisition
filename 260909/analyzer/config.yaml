@@ -1,8 +1,13 @@
 # DualHolo Analyze — camera settings are never written.
 wavelength_nm: 515.0
 pixel_pitch_um: 2.74
+padding_size: 4096
+compute_threads: 4
+peak_prominence_fraction: 0.03
+peak_min_width_samples: 1.0
 # Signed distance in the exp(+i kz z) convention, cam0 -> cam1.
-# Set from your optical geometry; null disables phase recovery.
+# Measured inside the calibration tab: z_cam0 - z_cam1.
+# Applying a verified image transform sets this; GS is always unfiltered.
 plane_separation_mm: null
 scan_min_mm: 30.0
 scan_max_mm: 90.0
@@ -16,6 +21,7 @@ output_dir: captures
 calibration_file: null
 camera_library: null
 cache_megabytes: 192
+cache_directory: null
 slider_debounce_ms: 160
 calibration_window_px: 96
 calibration_step_px: 96

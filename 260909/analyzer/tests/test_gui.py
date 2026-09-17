@@ -1,27 +1,26 @@
 from dataclasses import replace
-from pathlib import Path
 import time
-
 import numpy as np
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt, QPoint
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
-
+from PySide6.QtWidgets import QApplication, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider
+from holoanalyze.cache import DepthCache
 from holoanalyze.config import Config
 from holoanalyze.data import Frame, ImagePair
 from holoanalyze.engine import Analysis, Render
+from holoanalyze.settings import SettingsDialog
 from holoanalyze.window import MainWindow
 from test_calibration import identity_calibration
 
 
-def wait(app, condition, timeout=10):
+def wait(app, condition, timeout=15):
     end = time.monotonic()+timeout
     while time.monotonic() < end:
         app.processEvents()
         if condition():
             return
         QTest.qWait(10)
-    raise AssertionError("Qt condition timed out")
+    raise AssertionError('Qt condition timed out')
 
 
 def close(app, window):
@@ -30,64 +29,70 @@ def close(app, window):
 
 
 def test_offline_window_really_closes(app, tmp_path):
-    window = MainWindow(Config(output_dir=str(tmp_path)), tmp_path / "config.yaml")
-    window.show()
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
+    w.show()
     app.processEvents()
-    assert window.isVisible()
-    close(app, window)
+    assert w.isVisible() and w.camera is None
+    assert w.tabs.count() == 2
+    assert not any('Rec' in b.text() for b in w.findChildren(QPushButton))
+    for cls in (QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider):
+        assert all(widget.toolTip() for widget in w.findChildren(cls))
+    close(app, w)
 
 
-def test_offline_simulation_freeze_resume_and_close(app, tmp_path):
-    window = MainWindow(Config(output_dir=str(tmp_path)), tmp_path / "config.yaml")
-    window.show()
-    app.processEvents()
-    assert window.camera is None and not window.analyze_button.isEnabled()
-    assert not window.mode.model().item(2).isEnabled()
-    assert not list(tmp_path.rglob("*.tiff"))
-    window.start_simulation()
-    wait(app, lambda: window.capture_button.isEnabled())
-    window.capture()
-    token = window.frozen_pair.token
-    assert window.analyze_button.isEnabled()
-    first = window.frozen_pair.frames[0].image.copy()
-    wait(app, lambda: window.live_pair.token != token)
-    np.testing.assert_array_equal(first, window.frozen_pair.frames[0].image)
-    assert not list(tmp_path.rglob("*.tiff")), "Capture must not save automatically"
-    window.toggle_record()
-    wait(app, lambda: len(list(tmp_path.rglob("*.tiff"))) >= 4)
-    window.toggle_record()
-    wait(app, lambda: not list(tmp_path.rglob("IN_PROGRESS")))
-    window.resume()
-    assert window.frozen_pair is None and window.analysis is None
-    close(app, window)
+def test_simulation_tabs_keep_independent_capture_and_resume(app, tmp_path):
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
+    w.show()
+    a, c = w.acquisition, w.calibration_tab
+    assert not a.analyze_button.isEnabled() and not a.mode.model().item(2).isEnabled()
+    w.start_simulation()
+    wait(app, lambda: a.capture_button.isEnabled())
+    a.capture()
+    frozen, image = a.pair, a.pair.frames[0].image.copy()
+    w.tabs.setCurrentWidget(c)
+    wait(app, lambda: w.live_pair.frames[0].frame_id > frozen.frames[0].frame_id)
+    c.capture()
+    assert c.pair.frames[0].frame_id != frozen.frames[0].frame_id
+    np.testing.assert_array_equal(a.pair.frames[0].image, image)
+    c.resume()
+    assert c.pair is None and a.pair is frozen
+    assert not list(tmp_path.rglob('*.tiff')), 'Capture must not save automatically'
+    a.resume()
+    assert a.pair is None and a.viewer.analysis is None
+    close(app, w)
 
 
-def test_phase_gate_missing_wrong_and_valid_calibration(app, tmp_path):
-    config = replace(Config(output_dir=str(tmp_path)), plane_separation_mm=12)
-    w = MainWindow(config, tmp_path / "config.yaml")
+def test_calibration_apply_gate_and_settings_invalidate_optics(app, tmp_path):
+    config = Config(output_dir=str(tmp_path))
+    w = MainWindow(config, tmp_path/'config.yaml')
     image = np.ones((32, 40), np.uint8)
-    w.frozen_pair = ImagePair((Frame(image, config.serial0), Frame(image, config.serial1)))
-    w.update_controls()
-    assert not w.mode.model().item(2).isEnabled()
-    w.calibration = identity_calibration(image.shape, config)
-    w.update_controls()
-    assert w.mode.model().item(2).isEnabled()
-    w.config = replace(config, wavelength_nm=532)
-    w.update_controls()
-    assert not w.mode.model().item(2).isEnabled()
+    pair = ImagePair((Frame(image, config.serial0, path='/data/cam0.tiff'), Frame(image, config.serial1)))
+    w.acquisition.set_pair(pair)
+    cal = identity_calibration(image.shape, config)
+    cal.metadata.update(focus_depths_mm=[50, 38], gs_iterations=17)
+    w.calibration_tab.candidate_ready(cal, source='/data/cal.npz')
+    assert not w.acquisition.mode.model().item(2).isEnabled()
+    w.calibration_tab.apply_candidate()
+    assert w.acquisition.mode.model().item(2).isEnabled()
+    assert w.config.plane_separation_mm == 12 and w.acquisition.iterations.value() == 17
+    assert '/data/cam0.tiff' in w.acquisition.camera_panels[0].source.toPlainText()
+    w.apply_settings(replace(w.config, compute_threads=2))
+    assert w.calibration is cal
+    w.apply_settings(replace(w.config, wavelength_nm=532))
+    assert w.calibration is None and not w.acquisition.mode.model().item(2).isEnabled()
     close(app, w)
 
 
 def test_connection_failure_keeps_gui_usable(app, tmp_path, monkeypatch):
     def fail(*args, **kwargs):
-        raise RuntimeError("SDK is missing (test)")
-    monkeypatch.setattr("holoanalyze.window.NativeCamera", fail)
-    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path / "config.yaml")
+        raise RuntimeError('SDK is missing (test)')
+    monkeypatch.setattr('holoanalyze.window.NativeCamera', fail)
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
     w.show()
     w.connect_camera()
     wait(app, lambda: w.worker is None)
-    assert w.isVisible() and w.camera is None and w.load_button.isEnabled()
-    assert "SDK is missing" in w.message.text()
+    assert w.isVisible() and w.camera is None and w.acquisition.load_button.isEnabled()
+    assert 'SDK is missing' in w.message.text()
     w.start_simulation()
     wait(app, lambda: w.live_pair is not None)
     close(app, w)
@@ -96,47 +101,61 @@ def test_connection_failure_keeps_gui_usable(app, tmp_path, monkeypatch):
 class FakeReconstruction:
     def __init__(self):
         self.calls = []
+        self.cache = DepthCache(1)
+
+    def cached(self, z):
+        return self.cache.get(z)
 
     def render(self, z, cancel):
         self.calls.append(z)
         for _ in range(10):
             cancel.check()
             time.sleep(.005)
-        return Render(z, np.full((40, 50), z, np.float32), np.full((40, 50), z+1, np.float32))
+        result = Render(z, np.full((40, 50), z, np.float32), np.full((40, 50), z+1, np.float32)).prepare_preview()
+        self.cache.put(result)
+        return result
 
 
-def test_latest_depth_wins_toggle_no_compute_clipboard_and_resume(app, tmp_path):
-    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path / "config.yaml")
+def test_latest_depth_wins_cache_plot_toggle_clipboard_and_resume(app, tmp_path):
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
     w.show()
+    a, viewer = w.acquisition, w.acquisition.viewer
     reconstruction = FakeReconstruction()
-    w.analysis = Analysis(reconstruction)
-    w.depth.setValue(40)
-    w.request_depth()
-    w.depth.setValue(41)
-    w.request_depth()
-    w.depth.setValue(42)
-    w.request_depth()
-    wait(app, lambda: w.worker is None and w.rendered is not None)
-    assert w.rendered.z_mm == 42
+    viewer.set_analysis(Analysis(reconstruction))
+    viewer.select_depth(40)
+    viewer.select_depth(41)
+    viewer.select_depth(42)
+    wait(app, lambda: w.worker is None and viewer.rendered is not None)
+    assert viewer.rendered.z_mm == 42
     before = reconstruction.calls[:]
-    w.filtered.setChecked(False)
+    viewer.select_depth(42)
+    viewer.filtered.setChecked(False)
     app.processEvents()
     assert reconstruction.calls == before
-    w.copy_image()
+    a.copy_image()
     assert not QApplication.clipboard().image().isNull()
-    w.result_view.original_size()
-    w.result_view.zoom(2)
-    assert w.result_view.transform().m11() == 2
-    w.depth.setValue(43)
-    w.request_depth()
-    w.resume()
+    viewer.panel.view.original_size()
+    viewer.panel.view.zoom(2)
+    assert viewer.panel.view.transform().m11() == 2
+    viewer.select_depth(40)
     wait(app, lambda: w.worker is None)
-    assert w.rendered is None and w.analysis is None
+    viewer.analysis.curve = [(40, 1, 1), (42, 2, 2)]
+    viewer.set_analysis(viewer.analysis)
+    before = reconstruction.calls[:]
+    rect = viewer.plot.plot_rect()
+    QTest.mouseClick(viewer.plot, Qt.MouseButton.LeftButton, pos=QPoint(int(rect.right()-1), int(rect.center().y())))
+    assert viewer.rendered.z_mm == 42 and reconstruction.calls == before
+    viewer.slider.setValue(0)
+    assert viewer.rendered.z_mm == 40 and reconstruction.calls == before
+    viewer.select_depth(43)
+    a.resume()
+    wait(app, lambda: w.worker is None)
+    assert viewer.rendered is None and viewer.analysis is None
     close(app, w)
 
 
-def test_stop_and_close_during_long_work_stay_responsive(app, tmp_path):
-    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path / "config.yaml")
+def test_stop_and_close_during_work_are_responsive(app, tmp_path):
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
     ticks = []
     timer = QTimer()
     timer.timeout.connect(lambda: ticks.append(1))
@@ -145,10 +164,21 @@ def test_stop_and_close_during_long_work_stay_responsive(app, tmp_path):
         while True:
             cancel.check()
             time.sleep(.01)
-    w.submit("Analyze", operation, lambda r: None)
+    w.submit(w.acquisition, 'Analyze', operation, lambda r: None)
     wait(app, lambda: len(ticks) >= 5)
     w.stop()
     wait(app, lambda: w.worker is None)
-    w.submit("Analyze", operation, lambda r: None)
+    w.submit(w.acquisition, 'Analyze', operation, lambda r: None)
     close(app, w)
     timer.stop()
+
+
+def test_settings_controls_apply_explicit_optical_values(app):
+    dialog = SettingsDialog(Config())
+    dialog.fields['padding_size'].setValue(2048)
+    dialog.fields['compute_threads'].setValue(3)
+    dialog.fields['wavelength_nm'].setValue(532)
+    dialog.accept_validated()
+    assert dialog.result_config.padding_size == 2048
+    assert dialog.result_config.compute_threads == 3
+    assert dialog.result_config.wavelength_nm == 532

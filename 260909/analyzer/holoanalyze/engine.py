@@ -1,14 +1,12 @@
-"""CPU-only angular spectrum, GS and incremental autofocus; no file writes."""
-from collections import OrderedDict
+"""CPU angular spectrum, unfiltered GS and retained-depth autofocus."""
 from dataclasses import dataclass, field
 import math
 import threading
-
 import numpy as np
-from scipy import fft
-
-from optical_padding import mean_pad, PROPAGATION_SHAPE
+from scipy import fft, signal
+from optical_padding import mean_pad
 from optical_bandlimit import NumpyAngularSpectrumBandlimit
+from .cache import DepthCache, Render
 
 
 class Cancelled(Exception):
@@ -27,10 +25,10 @@ class Cancellation:
             raise Cancelled()
 
 
-def intensity_input(image):
+def intensity_input(image, side=4096):
     image = np.asarray(image)
-    if image.ndim != 2 or not image.size or max(image.shape) > 4096:
-        raise ValueError("Expected a nonempty monochrome image no larger than 4096 × 4096")
+    if image.ndim != 2 or not image.size or max(image.shape) > side:
+        raise ValueError(f"画像が指定パディング {side} × {side} を超えています。縮小は行いません。")
     if not np.isfinite(image).all() or np.iscomplexobj(image) or image.min() < 0:
         raise ValueError("Intensities must be finite, real and nonnegative")
     return image.astype(np.float32)
@@ -38,53 +36,71 @@ def intensity_input(image):
 
 def depths(minimum, maximum, step):
     if not all(math.isfinite(x) for x in (minimum, maximum, step)) or maximum < minimum or step <= 0:
-        raise ValueError("Use finite depths, min ≤ max and a positive step")
-    count = int(math.floor((maximum-minimum)/step + 1e-9)) + 1
+        raise ValueError("有限な深度、min ≤ max、正の間隔を指定してください")
+    count = int(math.floor((maximum-minimum)/step+1e-9))+1
     if count > 10001:
-        raise ValueError("At most 10001 depths per scan")
-    # Keep the requested interval exactly; max is included only if it lies on this grid.
-    return minimum + np.arange(count, dtype=np.float64)*step
+        raise ValueError("探索は10001深度以内にしてください")
+    return minimum+np.arange(count, dtype=np.float64)*step
 
 
 def tamura(intensity):
-    """Intensity contrast std(I)/mean(I), matching this repository's focus scans."""
     mean = float(np.mean(intensity, dtype=np.float64))
     return float(np.std(intensity, dtype=np.float64)/mean) if mean > 1e-20 else 0.0
 
 
+def focus_peaks(curve, config, column=1):
+    """Interior local peaks ranked by prominence, never an endpoint maximum."""
+    if len(curve) < 3:
+        return []
+    values = np.asarray(curve, dtype=np.float64)[:, column]
+    indices, props = signal.find_peaks(values, prominence=0, width=config.peak_min_width_samples)
+    accepted = []
+    for i, prominence in zip(indices, props["prominences"]):
+        threshold = max(abs(float(values[i]))*config.peak_prominence_fraction, 1e-12)
+        if prominence >= threshold:
+            accepted.append((int(i), float(prominence)))
+    return [i for i, _ in sorted(accepted, key=lambda v: v[1], reverse=True)]
+
+
 class Propagator:
     def __init__(self, config):
-        self.band = NumpyAngularSpectrumBandlimit(4096, config.pixel_pitch_um, config.wavelength_nm/1000)
+        self.side, self.threads = config.padding_size, config.compute_threads
+        self.band = NumpyAngularSpectrumBandlimit(self.side, config.pixel_pitch_um, config.wavelength_nm/1000)
+        self.phase_per_mm = None
 
     def transfer(self, z_mm, cancel, filtered=True):
         if not math.isfinite(z_mm):
             raise ValueError("Nonfinite depth")
-        out = np.empty(PROPAGATION_SHAPE, dtype=np.complex64)
-        fx2 = self.band.f[None, :]**2
-        k = 1/self.band.wavelength_um
-        for start in range(0, 4096, 128):
+        side = self.side
+        if self.phase_per_mm is None:
+            phase = np.empty((side, side), np.float64)
+            fx2, k = self.band.f[None, :]**2, 1/self.band.wavelength_um
+            for start in range(0, side, 128):
+                cancel.check()
+                rows = slice(start, start+128)
+                radius2 = fx2+self.band.f[rows, None]**2
+                phase[rows] = -2*np.pi*1000*radius2/(np.sqrt(k*k-radius2)+k)
+            self.phase_per_mm = phase
+        out = np.empty((side, side), dtype=np.complex64)
+        attenuate = filtered and not self.band.full_pass(z_mm)
+        for start in range(0, side, 128):
             cancel.check()
             rows = slice(start, start+128)
-            radius2 = fx2 + self.band.f[rows, None]**2
-            # Remove uniform piston and avoid catastrophic cancellation of kz-k.
-            phase = -2*np.pi*(z_mm*1000)*radius2/(np.sqrt(k*k-radius2)+k)
-            out[rows] = np.exp(1j*phase)
-            if filtered:
+            out[rows] = np.exp(1j*(self.phase_per_mm[rows]*z_mm))
+            if attenuate:
                 out[rows] *= self.band.window(z_mm, rows)
         return out
 
-    @staticmethod
-    def spectrum(field, cancel):
+    def spectrum(self, field, cancel):
         cancel.check()
-        padded, crop = mean_pad(field)
-        result = fft.fft2(padded, workers=1, overwrite_x=True)
+        padded, crop = mean_pad(field, side=self.side)
+        result = fft.fft2(padded, workers=self.threads, overwrite_x=True)
         cancel.check()
         return result, crop
 
-    @staticmethod
-    def from_spectrum(spectrum, transfer, crop, cancel):
+    def from_spectrum(self, spectrum, transfer, crop, cancel):
         cancel.check()
-        result = fft.ifft2(spectrum*transfer, workers=1, overwrite_x=True)[crop].copy()
+        result = fft.ifft2(spectrum*transfer, workers=self.threads, overwrite_x=True)[crop].copy()
         cancel.check()
         return result
 
@@ -93,50 +109,42 @@ class Propagator:
         return self.from_spectrum(spectrum, transfer, crop, cancel)
 
 
-@dataclass
-class Render:
-    z_mm: float
-    filtered: np.ndarray
-    unfiltered: np.ndarray
-
-    @property
-    def nbytes(self):
-        return self.filtered.nbytes+self.unfiltered.nbytes
-
-
 class Reconstruction:
-    """One immutable input/config/calibration revision and a bounded depth cache."""
     def __init__(self, field, config, cancel):
         self.propagator = Propagator(config)
         self.spectrum, self.crop = self.propagator.spectrum(field, cancel)
-        self.cache = OrderedDict()
-        self.cache_bytes = 0
-        self.cache_limit = config.cache_megabytes*1024*1024
+        self.cache = DepthCache(config.cache_megabytes, config.cache_directory)
+
+    def cached(self, z_mm):
+        return self.cache.get(z_mm)
+
+    def reserve_scan(self, count):
+        shape = tuple(s.stop-s.start for s in self.crop)
+        self.cache.reserve_scan(shape, count)
 
     def render(self, z_mm, cancel):
         key = float(z_mm)
         cancel.check()
-        if key in self.cache:
-            self.cache.move_to_end(key)
-            return self.cache[key]
-        transfer = self.propagator.transfer(key, cancel, filtered=False)
-        u = self.propagator.from_spectrum(self.spectrum, transfer, self.crop, cancel)
-        unfiltered = np.abs(u)**2
+        cached = self.cached(key)
+        if cached is not None:
+            return cached
+        prop = self.propagator
+        transfer = prop.transfer(key, cancel, filtered=False)
+        u = prop.from_spectrum(self.spectrum, transfer, self.crop, cancel)
+        unfiltered = (np.abs(u)**2).astype(np.float32)
         del u
-        for start in range(0, 4096, 128):
-            cancel.check()
-            rows = slice(start, start+128)
-            transfer[rows] *= self.propagator.band.window(key, rows)
-        u = self.propagator.from_spectrum(self.spectrum, transfer, self.crop, cancel)
-        result = Render(key, (np.abs(u)**2).astype(np.float32), unfiltered.astype(np.float32))
-        del u, transfer
-        # Cache only cropped intensities, never a depth stack or 4k complex fields.
-        if result.nbytes <= self.cache_limit:
-            while self.cache and self.cache_bytes+result.nbytes > self.cache_limit:
-                _, old = self.cache.popitem(last=False)
-                self.cache_bytes -= old.nbytes
-            self.cache[key] = result
-            self.cache_bytes += result.nbytes
+        if prop.band.full_pass(key):
+            filtered = unfiltered
+        else:
+            for start in range(0, prop.side, 128):
+                cancel.check()
+                rows = slice(start, start+128)
+                transfer[rows] *= prop.band.window(key, rows)
+            u = prop.from_spectrum(self.spectrum, transfer, self.crop, cancel)
+            filtered = (np.abs(u)**2).astype(np.float32)
+        result = Render(key, filtered, unfiltered).prepare_preview()
+        cancel.check()
+        self.cache.put(result)
         return result
 
 
@@ -144,21 +152,22 @@ def phase_recover(pair, calibration, config, iterations, cancel, progress):
     pair.require_both()
     calibration.validate_for(pair, config)
     if config.plane_separation_mm is None:
-        raise ValueError("Set the signed cam0 → cam1 plane_separation_mm in the YAML config")
+        raise ValueError("キャリブレーションタブで面間距離と画像変換を適用してください")
     if iterations < 1:
         raise ValueError("GS iterations must be positive")
-    a0 = intensity_input(pair.frames[0].image)
-    a1 = calibration.apply(pair.frames[1].image)  # original image, exactly one Lanczos4 resampling
+    a0 = intensity_input(pair.frames[0].image, config.padding_size)
+    a1 = calibration.apply(pair.frames[1].image)
     valid = calibration.calibrated_mask & calibration.valid_mask
-    # Normalize optical throughput only on the measured, geometrically supported area.
     m0, m1 = float(a0[valid].mean()), float(a1[valid].mean())
     if min(m0, m1) <= 0:
         raise ValueError("Both calibrated intensities must have a positive mean")
     amplitude0 = np.sqrt(a0)
     amplitude1 = np.sqrt(np.maximum(a1*(m0/m1), 0))
     prop = Propagator(config)
-    forward = prop.transfer(config.plane_separation_mm, cancel, filtered=True)
-    backward = forward.conj()  # same |z|-dependent filter on every return trip
+    # User choice: GS never attenuates the spectrum. The post-recovery
+    # reconstruction filter remains independently selectable.
+    forward = prop.transfer(config.plane_separation_mm, cancel, filtered=False)
+    backward = forward.conj()
     current = amplitude0.astype(np.complex64)
     for iteration in range(iterations):
         cancel.check()
@@ -166,7 +175,7 @@ def phase_recover(pair, calibration, config, iterations, cancel, progress):
         other[valid] = amplitude1[valid]*np.exp(1j*np.angle(other[valid]))
         current = prop.propagate(other, backward, cancel)
         current = amplitude0*np.exp(1j*np.angle(current))
-        progress("GS", iteration+1, iterations, None)
+        progress("GS 位相回復", iteration+1, iterations, None)
     cancel.check()
     return current.astype(np.complex64)
 
@@ -178,6 +187,8 @@ class Analysis:
     best_filtered: Render | None = None
     best_unfiltered: Render | None = None
     stopped: bool = False
+    peaks_filtered: list = field(default_factory=list)
+    peaks_unfiltered: list = field(default_factory=list)
 
 
 def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress):
@@ -189,24 +200,25 @@ def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress)
     else:
         index = 0 if mode == "gabor_cam0" else 1
         if pair.frames[index] is None:
-            raise ValueError(f"Load cam{index} first")
-        field = np.sqrt(intensity_input(pair.frames[index].image))
-    progress("Preparing 4096 × 4096 spectrum", 0, 0, None)
+            raise ValueError(f"cam{index} の画像を読み込んでください")
+        field = np.sqrt(intensity_input(pair.frames[index].image, config.padding_size))
+    progress(f"{config.padding_size} × {config.padding_size} スペクトルを準備", 0, 0, None)
     result = Analysis(Reconstruction(field, config, cancel))
+    result.reconstruction.reserve_scan(len(scan))
     del field
-    best_f = best_u = -math.inf
     try:
         for i, z in enumerate(scan):
             rendered = result.reconstruction.render(float(z), cancel)
-            f, u = tamura(rendered.filtered), tamura(rendered.unfiltered)
-            result.curve.append((float(z), f, u))
-            if f > best_f:
-                best_f, result.best_filtered = f, rendered
-            if u > best_u:
-                best_u, result.best_unfiltered = u, rendered
-            progress("Focus scan", i+1, len(scan), result.curve[-1])
+            result.curve.append((float(z), tamura(rendered.filtered), tamura(rendered.unfiltered)))
+            progress("Tamura 深度探索", i+1, len(scan), result.curve[-1])
     except Cancelled:
         if not result.curve:
             raise
         result.stopped = True
+    result.peaks_filtered = focus_peaks(result.curve, config, 1)
+    result.peaks_unfiltered = focus_peaks(result.curve, config, 2)
+    if result.peaks_filtered:
+        result.best_filtered = result.reconstruction.cached(result.curve[result.peaks_filtered[0]][0])
+    if result.peaks_unfiltered:
+        result.best_unfiltered = result.reconstruction.cached(result.curve[result.peaks_unfiltered[0]][0])
     return result

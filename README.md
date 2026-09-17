@@ -17,6 +17,6 @@ ctest --test-dir 260909/build --output-on-failure
 
 ソースは `260909/src`、テストは `260909/tests` にあります。
 同じリポジトリの [DualHolo Analyze](260909/analyzer/README.md) は、2台の画像のCapture、Gabor再生、Tamura焦点探索、キャリブレーションとGS位相回復に対応するCPU用GUIです。
-連続撮影用のDualHoloとは別アプリです。[Analyzeの配布](https://github.com/dainakai/ArcImgAcquisition/releases/tag/analyzer-v0.1.0) は `analyzer-v*` タグで管理します。
+連続撮影用のDualHoloとは別アプリです。[Analyzeの配布](https://github.com/dainakai/ArcImgAcquisition/releases/tag/analyzer-v0.2.0) は `analyzer-v*` タグで管理します。
 カメラとSDKがなくても起動でき、保存済みのDualHolo画像を読み込めます。
 ソースと配布用CIを `260909/analyzer` に置き、撮影データ、解析結果、SDK、ビルド出力はGitに含めません。

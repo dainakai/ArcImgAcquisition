@@ -31,7 +31,7 @@ def test_exposure_pairing_survives_missing_frame_and_integer_precision(tmp_path)
                                   (1, 1, epoch+100_000_010), (1, 2, epoch+200_000_000)])
     pair, note = find_partner(paths[1], tolerance_ms=.00002)
     assert pair == (paths[1], paths[2])
-    assert "exposure" in note
+    assert "露光時刻差" in note
     assert find_partner(paths[0])[0] == (paths[0], None)
     loaded, _ = load_pair(paths[2], Config())
     assert loaded.frames[0].serial == "26259157"

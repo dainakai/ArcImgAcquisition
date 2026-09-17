@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 import sys
 
-# One compute worker + two camera threads + one writer, at most four application
-# workers. Do not multiply this by BLAS/OpenCV/FFT internal worker pools.
+# FFT explicitly uses the configured 1–4 CPU workers. Keep unrelated BLAS/OpenCV
+# pools serial so they do not multiply the compute concurrency.
 for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ[variable] = "1"
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")

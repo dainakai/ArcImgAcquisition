@@ -25,8 +25,8 @@ def read_image(path):
         im = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     if im is None or im.ndim != 2 or im.size == 0:
         raise ValueError(f"A single monochrome image is required: {path}")
-    if max(im.shape) > 4096:
-        raise ValueError("Images larger than 4096 pixels are not supported; no automatic resizing")
+    if max(im.shape) > 8192:
+        raise ValueError("8192画素を超える画像には対応していません。自動縮小は行いません。")
     if not np.issubdtype(im.dtype, np.number) or np.iscomplexobj(im) or not np.isfinite(im).all() or im.min() < 0:
         raise ValueError("Image intensities must be real, finite and nonnegative")
     return np.ascontiguousarray(im)
@@ -73,7 +73,7 @@ def find_partner(selected: Path, tolerance_ms=8.0, max_uncertainty_ms=3.0):
     selected = selected.resolve()
     camera_match = re.match(r"cam([01])_", selected.parent.name) or re.match(r"cam([01])_", selected.name)
     if not camera_match:
-        return (selected, None), "Camera name unknown; assigned to cam0. Use Load cam1 to supply the other image."
+        return (selected, None), "カメラ番号を判定できないためcam0に読み込みました。「画像を読込 → cam1 の画像を指定」で相方を追加できます。"
     camera = int(camera_match[1])
     paths = [None, None]
     paths[camera] = selected
@@ -90,37 +90,37 @@ def find_partner(selected: Path, tolerance_ms=8.0, max_uncertainty_ms=3.0):
             rows = list(reader)
         own = [r for r in rows if _manifest_path(root, r["file"]) == selected]
         if len(own) != 1:
-            return tuple(paths), "Selected image is missing or duplicated in frames.csv; no automatic pairing."
+            return tuple(paths), "frames.csv内で選択画像が見つからないか重複しています。相方は個別に指定してください。"
         row = own[0]
         if int(row["camera"]) != camera:
             raise ValueError("Camera directory disagrees with frames.csv")
         instant = int(row["estimated_exposure_host_ns"])  # not float: preserve all 64 bits
         if float(row["clock_uncertainty_ms"]) > max_uncertainty_ms:
-            return tuple(paths), "Selected frame's clock uncertainty exceeds the configured limit."
+            return tuple(paths), "選択したフレームの時刻誤差が設定上限を超えています。相方は個別に指定してください。"
         candidates = [r for r in rows if int(r["camera"]) == 1-camera
                       and float(r["clock_uncertainty_ms"]) <= max_uncertainty_ms
                       and abs(int(r["estimated_exposure_host_ns"])-instant) <= tolerance_ms*1e6]
         if len(candidates) != 1:
-            return tuple(paths), "No unique exposure-time partner within tolerance; load the other image explicitly."
+            return tuple(paths), "許容露光時刻差の範囲で相方が一意に決まりません。「画像を読込」から相方を個別に指定してください。"
         partner = candidates[0]
         other_instant = int(partner["estimated_exposure_host_ns"])
         reverse = [r for r in rows if int(r["camera"]) == camera
                    and abs(int(r["estimated_exposure_host_ns"])-other_instant) <= tolerance_ms*1e6]
         if len(reverse) != 1:
-            return tuple(paths), "Ambiguous reverse timestamp match; no automatic pairing."
+            return tuple(paths), "露光時刻の逆対応が一意ではありません。相方は個別に指定してください。"
         p = _manifest_path(root, partner["file"])
         if not p.is_file():
-            return tuple(paths), "Partner is listed in frames.csv but its image file is missing."
+            return tuple(paths), "frames.csvにある相方の画像ファイルが見つかりません。"
         paths[1-camera] = p
-        return tuple(paths), f"Paired by exposure time (difference {abs(other_instant-instant)/1e6:.3f} ms)."
+        return tuple(paths), f"露光時刻差 {abs(other_instant-instant)/1e6:.3f} ms のペアを読み込みました。"
     # Old DualHolo: event_.../frame_000019/cam0_serial.tiff + cam1_serial.tiff.
     if re.match(r"cam[01]_", selected.name):
         partners = sorted(p for p in selected.parent.glob(f"cam{1-camera}_*")
                           if p.suffix.lower() in (".tif", ".tiff", ".png"))
         if len(partners) == 1:
             paths[1-camera] = partners[0]
-            return tuple(paths), "Paired using the legacy per-pair directory."
-    return tuple(paths), "No frames.csv found; frame sequence numbers are not used as synchronization."
+            return tuple(paths), "同じペアフォルダのcam0・cam1画像を読み込みました。"
+    return tuple(paths), "frames.csvが見つかりません。連番だけでは同期判定せず、片側を読み込みました。相方は個別に指定してください。"
 
 
 def load_pair(selected, config):

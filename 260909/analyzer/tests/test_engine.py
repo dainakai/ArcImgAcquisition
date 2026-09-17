@@ -98,7 +98,8 @@ def test_gs_constraints_cancellation_and_incremental_scan():
             cancel.cancel()
     result = analyze(pair, "gabor_cam0", config, None, 1, [0, 1, 2], cancel, progress)
     assert result.stopped and len(result.curve) == 1 and len(rows) == 1
-    assert result.best_filtered.z_mm == 0
+    assert result.best_filtered is None  # an endpoint is never a focus estimate
+    assert result.reconstruction.cached(0) is not None
     with pytest.raises(Cancelled):
         result.reconstruction.render(1, cancel)
     with pytest.raises(ValueError):

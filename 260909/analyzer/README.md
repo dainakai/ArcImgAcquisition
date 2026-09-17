@@ -1,17 +1,170 @@
 # DualHolo Analyze
 
-2台のホログラムを固定して、Gabor再生、Tamura焦点探索、ガラスプレートによる位置合わせ、2面のGS位相回復を行うCPU用GUIです。
-Windows、macOS、Ubuntu向けにPythonとQtで実装しています。
-カメラやSpinnaker SDKがなくても起動でき、模擬入力と保存済み画像を使用できます。
-このアプリはユーザー指定による例外として、手元のCPUで再構成し、ローカルへ結果を保存します。
+2台のホログラムをCaptureして、Gabor再生、Tamura焦点探索、ガラスプレートによる画像変換、2面GS位相回復を行うCPU用アプリです。
+Windows、macOS、Ubuntuで使用でき、カメラやSpinnaker SDKがなくても起動します。
+手元のCPUで計算し、再生画像とキャリブレーションをローカルへ保存します。
 
-配布アプリは [DualHolo Analyze v0.1.0](https://github.com/dainakai/ArcImgAcquisition/releases/tag/analyzer-v0.1.0) から取得できます。
-Analyzeは `analyzer-v*`、連続撮影用のDualHoloは `v*` のタグで別々にリリースします。
-両方のアプリを同じPCへ配置でき、Analyzeの利用にDualHolo本体のインストールは不要です。
+[DualHolo Analyze v0.2.0の配布](https://github.com/dainakai/ArcImgAcquisition/releases/tag/analyzer-v0.2.0)から対象OSのアーカイブを展開し、`DualHoloAnalyze`を起動してください。
+配布版にはPythonと必要なライブラリを同梱しています。
+Analyzeは`analyzer-v*`、連続撮影用のDualHoloは`v*`で別々にリリースします。
 
-## カメラなしで起動する
+## 撮影・解析タブ
 
-Python 3.12の仮想環境を作成し、リポジトリのルートで次を実行します。
+1. 「カメラを接続」または「シミュレーション」で10 Hzの画像を表示し、**Capture · 撮影**で最新の同期ペアを固定します。カメラなしの場合は「画像を読込…」を使います。
+2. 左側の「解析条件」で`Gabor · cam0`、`Gabor · cam1`、`位相回復 · 2カメラ`を選び、最小深度・最大深度・間隔とGS反復回数を指定します。
+3. **Analyze · 深度探索**で計算します。位相回復モードでは、最初に指定回数のGSを実行し、その位相場を各深度へ再生します。
+4. 完了すると左側が「深度・保存」に切り替わります。スライダー、Tamura曲線のクリック、ピーク候補の選択で計算済みの画像へ移動できます。任意の深度は数値を入力してEnterで再生します。
+
+位相回復は、互換性のあるキャリブレーションを明示的に適用した後に選べます。
+**Resume · 再開**は、そのタブのCapture画像と解析結果を破棄してライブ表示へ戻します。
+新しいペアを300 ms以上受信していない場合はCaptureできません。
+Captureだけでは保存せず、「入力画像を保存…」で元のホログラムを保存します。
+Analyzeには連続Recボタンはありません。
+
+「画像を読込…」には、ペアの自動選択とcam0・cam1の個別指定があります。
+DualHoloの`recording_…/cam0_…/frame_….tiff`を選ぶと、`frames.csv`の64 bit整数の推定露光時刻を照合して相方を探します。
+旧形式の`frame_…/cam0_….tiff`では、同じペアフォルダのもう一方を選びます。
+相方が一意に決まらなければ片側だけを読み込み、理由を表示します。
+フレームIDや連番だけでは同期を判定しません。
+画像の下には入力元のフルパスを表示し、選択してコピーできます。
+
+## キャリブレーションタブ
+
+ガラスプレートの撮影から面間距離の推定、変換マップの検証・適用まで、このタブで実行します。
+撮影・解析タブとは別の入力ペアと再生結果を保持し、カメラ接続だけを共有します。
+
+1. ガラスプレートをCaptureするか、ペアを読み込みます。
+2. 探索範囲と間隔を指定して「両カメラの焦点を探索」を押します。「焦点合わせ」に各カメラの再生像とTamura曲線が表示されます。
+3. 山型ピークと画像を確認し、必要なら各カメラの深度を数値、スライダー、曲線クリックで微調整します。選択した焦点距離から、符号付き面間距離 **Δz = z0 − z1** を求めます。離間量は`|Δz|`です。
+4. 「ベクトルマップを計算」で、表示中の焦点像から対応点を求めます。「ベクトルマップ」で補正前の変位と補正後の残差、「補正結果」で元のcam0と変換後のcam1を確認します。矢印は各図の倍率と画素スケールを併記します。
+5. **画像変換を適用**で、面間距離と変換マップを撮影・解析タブへ渡します。キャリブレーションのGS反復回数も撮影タブへ引き継ぎます。
+
+候補を計算・読込みしただけでは、撮影タブのキャリブレーションを置き換えません。
+焦点やフィルタ条件を変えると未適用の候補を無効にし、ベクトルマップの再計算が必要になります。
+以前に適用した補正は、新たな候補を適用するまで保持します。
+
+「補正データを保存…」で、焦点、面間距離、float座標マップ、支持領域、ベクトル、光学条件、シリアル番号、入力パス・ハッシュをNPZへ保存します。
+次回は「補正データを読込…」、またはYAMLの`calibration_file`で読み込み、条件と図を確認してから適用します。
+元のガラス画像はNPZに埋め込みません。
+変換後の画像を再確認する場合は、このタブに元ペアを読み込んでから補正データを読み込みます。
+条件が一致すれば、保存したマップで変換したcam1を「補正結果」に表示します。
+
+位置合わせは局所相関からサブピクセル変位を求め、往復対応を検証して2次多項式を当てはめます。
+対応点数、フィット誤差、空間的に分けた保留点の誤差、変換後の残差が基準を満たす場合だけ採用します。
+マップは「cam0の出力座標からcam1の元画像を読む座標」で、元画像への変換はLanczos4で一度だけ行います。
+cam0の保存済みReverseYを再適用することはありません。
+
+GSでは、対応点の支持領域と補間カーネルの有効領域の共通部分だけにcam1の振幅拘束を適用します。
+その領域の平均強度でカメラ間の光量を合わせ、補間で生じた負値は振幅化の直前に0へ制限します。
+カメラ順序、画像サイズ、波長、画素ピッチ、パディングが合わない補正では位相回復できません。
+装置配置やROIを変更した場合は、新しいガラスプレートで較正してください。
+
+## ピーク、表示、中断
+
+Tamuraは元の画像領域の強度に対する`std(I) / mean(I)`です。
+**探索端を候補から除き、両側に下りがある山型ピーク**を突出量の順に提示します。
+ピークの既定条件は突出量がピーク値の3%以上、半突出量での幅が1サンプル以上です。
+条件は設定画面で変更できます。
+候補がない場合は焦点を自動確定せず、探索範囲の変更か手動指定を案内します。
+探索途中で中断した場合も、終端の最大値は焦点とみなしません。
+
+探索で得た**全深度の再生強度と表示画像を保持**します。
+メモリ上限を超えた分は一時キャッシュへ書き出し、計算済みの深度ではFFTを再実行しません。
+キャッシュからの読込みと画面描画の時間は必要です。
+数値入力した未計算の深度だけをバックグラウンドで再生し、連続した要求では最後の深度を優先します。
+帯域制限あり／なしは同じ深度で両方を事前計算し、共通のコントラスト範囲で切り替えます。
+
+ホイールと＋／−で拡大縮小し、ドラッグまたは縦横のスクロールバーで移動できます。
+「全体」は画像全体を表示し、1:1は画素等倍です。
+画像の縦横比を保持し、パネルの境界をドラッグして配分も変えられます。
+Nで表示コントラスト、QまたはEscで終了します。
+操作の説明はボタンや入力欄へマウスを重ねると日本語で表示されます。
+
+画面下部の進捗欄と「計算を中断」は、焦点探索、GS、任意深度の再生、ベクトル計算に共通です。
+実行中の1回のFFTや相関ブロックの終了後に停止します。
+探索済みの曲線と画像は保持し、GS完了前に中断した位相場は採用しません。
+終了時は計算停止とカメラの切断を待ち、一時キャッシュを解放します。
+
+## 設定と光伝搬
+
+右上の「設定…」から光学・CPU設定を開くか、YAMLを読み書きできます。
+例は[config.yaml](config.yaml)です。
+YAML内の相対パスは、そのYAMLの場所を基準に解釈します。
+
+| 設定 | 意味 | 既定値 |
+|---|---|---|
+| `wavelength_nm` | 波長 [nm] | 515 |
+| `pixel_pitch_um` | 画素ピッチ [µm] | 2.74 |
+| `padding_size` | 正方形の伝搬配列の辺長 | 4096 |
+| `compute_threads` | FFTのCPUスレッド数、1〜4 | 4 |
+| `plane_separation_mm` | 適用した較正のcam0→cam1伝搬距離 [mm] | null |
+| `scan_min_mm` / `scan_max_mm` / `scan_step_mm` | 深度範囲と間隔 [mm] | 30 / 90 / 1 |
+| `gs_iterations` | GS往復回数 | 20 |
+| `peak_prominence_fraction` | 山型ピークの最小突出率 | 0.03 |
+| `peak_min_width_samples` | 半突出量での最小幅 [点] | 1 |
+| `cache_megabytes` | 再生系列ごとのメモリ上限 [MiB] | 192 |
+| `cache_directory` | 一時キャッシュ先。空欄はOSの一時フォルダ | null |
+| `calibration_file` | 再利用する補正データ | null |
+| `output_dir` | 結果の保存先 | captures |
+
+全光伝搬は、中央に入力場を置き、周囲を**場の平均値**で埋めた配列で計算します。
+既定は4096×4096です。
+Gaborの入力は`sqrt(I)`とし、振幅の平均を使います。
+複素場は複素平均を使い、GSの各往復でも切り出した画像領域を同じ規則で埋め直します。
+表示とTamura評価は中央の元画像領域だけです。
+パディングは16〜8192の辺長を明示指定できますが、入力より小さい場合はエラーとし、自動縮小・自動拡張はしません。
+設定変更時は解析キャッシュを解放し、光学条件を変えた場合は適用済み較正も無効にします。
+
+伝搬の符号は`exp(+i 2π z sqrt(λ⁻² − fx² − fy²))`です。
+一様な位相は計算精度のため伝達関数から除いています。
+位相回復後の深度はcam0面を基準とします。
+同じガラス面への焦点が`z0, z1`なら`P(z0)U0 = P(z1)U1`より`U1 = P(z0 − z1)U0`となり、この差をGSの面間伝搬に使います。
+
+**GSの往復伝搬は、ユーザー指定により常に帯域制限なし**です。
+各深度の再生表示は、帯域制限あり／なしを別に計算します。
+帯域制限ありでは、各方向の`q_j = 2|z||f_j| / (L_j sqrt(λ⁻² − fx² − fy²))`を使い、`1 − 10⁻⁶`を安全側の端として帯域内の端5%をcosineで減衰させます。
+全帯域が減衰開始点より内なら、両表示は同じ結果を使用します。
+この条件は伝達関数のサンプリングを対象とします。
+
+FFTは指定した1〜4スレッドで実行し、GUI・カメラ取得は別スレッドです。
+BLASとOpenCVの内部並列数は1に制限します。
+GPUは使用しません。
+
+## 保存先
+
+通常は1回の起動を1セッションとし、「新規セッション」で保存先を分けられます。
+カメラ接続中は先に切断してください。
+基本構造はDualHoloに合わせています。
+
+```text
+captures/session_YYYYMMDD_HHMMSS_xxxxxx/
+  config.yaml
+  calibration.npz
+  camera0.yml                     # 実カメラ接続時の読み取り値
+  camera1.yml
+  recording_YYYYMMDD_HHMMSS_xxxxxx/
+    frames.csv                    # 「入力画像を保存」したペア
+    cam0_26259157/frame_000000_id….tiff
+    cam1_26259158/frame_000000_id….tiff
+  recording_<Captureした日時>/
+    reconstructions/
+      phase_z+50.000000mm_filtered.tiff
+      phase_z+50.000000mm_filtered.tiff.json
+      phase_z+50.000000mm_filtered.tiff.csv
+```
+
+「表示画像をコピー」は表示コントラストの画像をコピーします。
+「再生画像を保存…」のTIFFはfloat32強度、PNGは8 bit表示画像です。
+JSONへ条件・入力ハッシュ・較正情報、CSVへTamura曲線を保存します。
+保存先と名前はダイアログで変更できます。
+一時深度キャッシュはセッションへの恒久保存とは別で、Resume・再解析・終了時に解放します。
+
+配布アプリは隣の`config.yaml`を優先します。
+macOSで`.app`だけを移動した場合は内蔵設定を使い、Pictures内の`DualHoloAnalyze/captures`へ保存します。
+
+## ソースから起動する
+
+Python 3.12の仮想環境で、リポジトリのルートから実行します。
 
 ```sh
 python3 -m venv 260909/analyzer/.venv
@@ -19,204 +172,39 @@ python3 -m venv 260909/analyzer/.venv
 260909/analyzer/.venv/bin/python 260909/analyzer/run.py --simulate
 ```
 
-Windows PowerShellでは次を実行します。
+Windowsでは`py -3.12 -m venv 260909/analyzer/.venv`で作成し、`260909/analyzer/.venv/Scripts/python`を使用します。
+`--simulate`を省略すると未接続で起動します。
+`--config /path/to/config.yaml`で設定ファイルを指定できます。
+セットアップ後は`run.command`または`Run.cmd`でも起動できます。
 
-```powershell
-py -3.12 -m venv 260909/analyzer/.venv
-260909/analyzer/.venv/Scripts/python -m pip install -r 260909/analyzer/requirements.txt
-260909/analyzer/.venv/Scripts/python 260909/analyzer/run.py --simulate
-```
+## 実カメラと配布物の作成
 
-`--simulate` を省略すると、未接続のGUIを開きます。
-`Load image / pair…` から保存画像を選択できます。
-`--config /path/to/config.yaml` で設定を指定でき、相対パスは設定ファイルの場所を基準に解釈します。
-セットアップ後はmacOSとUbuntuで `run.command`、Windowsで `Run.cmd` も使用できます。
-
-## Captureと画像の読み込み
-
-`Simulate 10 Hz` または `Connect cameras` で2台の画像を左右に表示します。
-`Capture` は最新の同期ペアをメモリ内に固定し、`Resume` は固定画像と解析結果を破棄してライブ表示へ戻ります。
-新しいペアを300 ms以上受信していない場合はCaptureを無効にします。
-Captureそのものではディスクへ画像を保存しません。
-
-`Load image / pair…` はDualHoloの新旧の保存構造に対応します。
-現在の `recording_…/cam0_…/frame_….tiff` 形式では、`frames.csv` の64 bit整数の推定露光時刻を照合して相手を選びます。
-同じ連番やフレームIDでも同じ露光とは限らないため、それらを対応づけの根拠にしません。
-旧形式の `frame_…/cam0_….tiff` では同じペアフォルダのもう一方を選択します。
-対応する画像が一意に決まらない場合は、片側だけを読み込み、理由を画面下部へ表示します。
-`Load cam1…`（cam0が欠けている場合は `Load cam0…`）で手動指定できます。
-
-Recは起動時OFFです。
-RecボタンまたはRで明示的に開始した区間だけ、受信した全画像をDualHoloと同じRecorderで保存します。
-Capture中も、明示的に開始したRecは継続します。
-Nは表示コントラスト、QとEscは終了です。
-終了時は計算を停止し、保存待ちの録画画像を書き終えてからカメラを閉じます。
-
-## 再生と焦点探索
-
-画像をCaptureまたは読込み後、`Gabor · cam0`、`Gabor · cam1`、`Phase recovery · 2 cameras` のいずれかを選びます。
-最小深度、最大深度、間隔を入力し、`Analyze` を押します。
-位相回復モードでは、指定回数のGSを実行してから焦点探索へ進みます。
-
-深度ごとに再構成強度の **Tamuraコントラスト** `std(I) / mean(I)` を計算し、曲線を逐次更新します。
-これは既存の解析スクリプトと同じ定義です。
-完了時は表示中のフィルタ条件でTamuraが最大となる計算済み深度を表示します。
-最大深度は指定間隔の格子に乗る場合だけ含め、最大値に合わせて間隔を変えません。
-最大値が探索端にある場合は画面下部で通知します。
-z=0のセンサ像が最大となる場合もあり、Tamura最大値だけで物体の実深度を保証するものではありません。
-
-`Stop` はFFTの前後と小さな計算ブロックの間で中断します。
-実行中の1回のFFTは完了を待ちます。
-焦点探索を中断した場合は完了済みの曲線と最大位置を保持し、partial scanと表示します。
-GSが終わる前に中断した場合、未完了の位相を解析結果として採用しません。
-
-探索後はDepthへ値を入力してEnterを押すか、スライダーを動かすと、その位置を自動再生します。
-スライダーの連続操作は既定160 msにまとめ、古い要求を取り消して最新の位置を計算します。
-`2D anti-alias filter` は同じ深度の計算済み画像を切り替えます。
-表示コントラストの範囲も2画像で共通にし、切替時に再計算しません。
-複素スペクトル1枚と容量制限付きの画像キャッシュを保持し、深度ごとの画像スタックを保存しません。
-
-再構成画像はホイールと＋／−で拡大縮小し、ドラッグまたは縦横のスクロールバーで移動できます。
-Fitは画面に合わせ、1:1は画像の1画素を表示の1画素に戻します。
-`Copy image` は表示コントラストの画像全体をクリップボードへコピーします。
-`Save image as…` のTIFFはfloat32強度、PNGは表示コントラストの8 bit画像です。
-同名のJSONへ使用条件、入力ハッシュ、キャリブレーション情報を記録し、CSVへTamura曲線を保存します。
-
-## 光学設定
-
-設定の例は [config.yaml](config.yaml) にあります。
-GUIの `Load YAML config…` と `Save YAML config…` でも読み書きできます。
-設定の読込み前にはカメラをDisconnectし、計算を停止します。
-
-| キー | 単位と意味 | 既定値 |
-|---|---|---|
-| `wavelength_nm` | 波長、nm | 515 |
-| `pixel_pitch_um` | 画素ピッチ、µm | 2.74 |
-| `plane_separation_mm` | 符号付きのcam0からcam1への伝搬距離、mm | null |
-| `scan_min_mm` / `scan_max_mm` / `scan_step_mm` | 焦点探索の範囲と間隔、mm | 30 / 90 / 1 |
-| `gs_iterations` | GSの往復回数 | 20 |
-| `calibration_file` | 保存済みキャリブレーションのパス | null |
-| `output_dir` | 保存先 | captures |
-| `cache_megabytes` | 深度画像キャッシュの上限、MiB | 192 |
-| `slider_debounce_ms` | 連続スライダー操作をまとめる時間、ms | 160 |
-
-伝搬は `exp(+i 2π z sqrt(λ⁻² − fx² − fy²))` の符号規約です。
-位相回復後の深度もcam0面からの符号付き距離です。
-cam0とcam1の番号は光学的な前後関係を表さないため、`plane_separation_mm` は装置に合わせて設定します。
-既定値nullのままでは位相回復を許可しません。
-強度に影響しない一様な位相は、計算精度を保つため伝達関数から除いています。
-
-すべての光伝搬は元の画素ピッチの4096×4096配列で行います。
-Gaborの入力は `sqrt(I)` で、周囲を振幅の平均で埋めます。
-複素場は複素平均で埋め、GSの往復時にも画像領域を取り出してから同じ規則で埋め直します。
-表示と評価は中央の元画像領域だけを使います。
-4096を超える画像はエラーとし、自動縮小しません。
-共通実装は `../registration/optical_padding.py` と `optical_bandlimit.py` です。
-
-フィルタは各方向の `q_j = 2|z||f_j| / (L_j sqrt(λ⁻² − fx² − fy²))` を使います。
-`1 − 10⁻⁶` を安全側の端とし、帯域内の端5%をcosineで減衰させます。
-GSの各往復には常にフィルタを適用し、「なし」の表示は得られた同じ位相場からの後段伝搬だけを比較します。
-この帯域制限は伝達関数のサンプリングを対象とし、撮影範囲外の縞や周期境界誤差全般の解消を保証しません。
-
-## ガラスプレートによるキャリブレーション
-
-ガラスプレートを撮影してCaptureするか、その画像ペアを読み込み、`Calibrate captured glass…` を押します。
-各カメラの焦点を現在の探索範囲から求める方法と、Gaborで確認した焦点位置を直接入力する方法を選べます。
-自動探索の最大位置が範囲端ならキャリブレーションを採用せず、範囲の修正を求めます。
-
-焦点を合わせた2画像から局所相関のサブピクセル変位を求め、往復対応の確認後に2次多項式をロバストに当てはめます。
-対応点数、残差、空間的に分けた検証点の誤差が設定された基準を満たした場合だけ、float32の座標マップを作成します。
-この誤差は画像上の対応の検証値であり、独立な物理計測による絶対精度ではありません。
-マップの方向は「cam0の出力座標からcam1の元画像を読む座標」です。
-
-`Save calibration…` はマップ、支持領域、光学条件、カメラシリアル、入力画像ハッシュをNPZへ保存します。
-次回は `Load calibration…` またはYAMLの `calibration_file` で再利用できます。
-画像サイズ、カメラ順序、波長、画素ピッチが異なるキャリブレーションでは位相回復を無効にします。
-装置の配置やROIを変更した場合は、新しいガラスプレート画像で再較正してください。
-旧研究用NPZには必要なメタデータがないため、このアプリで作成した形式を使います。
-
-GSでは元のcam1画像にLanczos4補間を一度だけ適用します。
-測定点の支持領域と補間カーネルの有効範囲の共通部分だけにcam1の振幅拘束を適用し、未較正領域は推定値を保持します。
-その領域の平均強度でカメラ間の光量を合わせ、補間で生じた負値は振幅化の直前に0へ制限します。
-保存済みcam0画像を追加で上下反転する処理はありません。
-
-## セッションと保存先
-
-通常はアプリを開いている間、1つのセッションを使います。
-カメラをDisconnectして `New session` を押すと新しいセッションへ切り替えます。
-保存先の基本構造はDualHoloに合わせています。
-
-```text
-captures/session_YYYYMMDD_HHMMSS_xxxxxx/
-  config.yaml
-  camera0.yml                     # 実カメラ接続時の読み取り値
-  camera1.yml
-  recording_YYYYMMDD_HHMMSS_xxxxxx/
-    frames.csv                    # RecまたはSave captured raw pair
-    cam0_26259157/frame_000000_id….tiff
-    cam1_26259158/frame_000000_id….tiff
-  recording_<Captureした日時>/
-    reconstructions/
-      gabor_cam0_z+50.000000mm_filtered.tiff
-      gabor_cam0_z+50.000000mm_filtered.tiff.json
-      gabor_cam0_z+50.000000mm_filtered.tiff.csv
-```
-
-`Save captured raw pair` は固定中の生画像を保存します。
-生画像にはコントラスト調整や幾何補正を適用しません。
-再構成画像の保存先と名前はダイアログで変更できます。
-配布アプリは隣のconfig.yamlを優先し、macOSで `.app` だけを移動した場合は内蔵設定を使い、ユーザーのPictures内の `DualHoloAnalyze/captures` を保存先にします。
-
-## 実カメラ用の取得ライブラリ
-
-カメラ用C APIブリッジはDualHoloの `Cameras`、`Pairer`、`Recorder`、`CameraLock` を共有します。
+カメラ用C APIブリッジはDualHoloの取得・同期・排他ロックを共有します。
 カメラとストリームの設定は変更せず、既存の外部10 Hzトリガを使用します。
-DualHoloとこのアプリは同じ排他ロックを取り、二重にカメラを開きません。
-Spinnakerを開くのは `Connect cameras` を押したときだけです。
-
-```sh
-cmake -S 260909 -B 260909/build -DHOLO_ANALYZER_BRIDGE=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build 260909/build --target holo_capture --parallel 4
-```
-
-生成物はmacOSで `260909/build/analyzer/libholo_capture.dylib`、Ubuntuで `libholo_capture.so`、WindowsのVisual Studio構成で `analyzer/Release/holo_capture.dll` です。
-別の場所へビルドした場合はYAMLの `camera_library` または環境変数 `HOLO_CAPTURE_LIBRARY` に絶対パスを指定します。
-Spinnakerの導入方法は [DualHoloの配布説明](../docs/distribution.md) と共通です。
-ライブラリがなくてもGUI、模擬入力、ファイル解析は使用できます。
-
-GUIのほかに、計算1、実カメラ取得2、録画書込み1の最大4ワーカーを使います。
-FFT、BLAS、OpenCVの内部並列数は1に制限し、GPUは使いません。
-設定変更、入力変更、Resumeで前の解析結果とキャッシュを無効にします。
-
-## 検証と配布物の作成
-
-```sh
-260909/analyzer/.venv/bin/python -m pip install pytest pyinstaller
-260909/analyzer/.venv/bin/python -m pytest 260909/analyzer/tests --run-optical -q
-```
-
-`--run-optical` は4096角の数値検証を有効にします。
-省略時は光伝搬を含むテストをスキップします。
-`HOLO_CAPTURE_LIBRARY` を設定すると、ネイティブ取得ブリッジの模擬入力とRecも検証します。
-実カメラを開くテストはありません。
-
-配布物には各OS上でビルドした共有ライブラリを同梱します。
-OpenCVを静的に組み込んでから、次のようにPyInstallerで作成します。
+DualHoloとAnalyzeは同じ排他ロックを使い、実カメラを二重に開きません。
+Spinnakerを開くのは「カメラを接続」を押したときだけです。
+実カメラには[DualHoloと同じSDK・ドライバ](../docs/distribution.md)が必要です。
 
 ```sh
 cmake -S 260909 -B 260909/build-analyzer -DHOLO_ANALYZER_BRIDGE=ON -DHOLO_BUNDLED_OPENCV=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build 260909/build-analyzer --target holo_capture --config Release --parallel 4
+260909/analyzer/.venv/bin/python -m pip install pytest pyinstaller
+260909/analyzer/.venv/bin/python -m pytest 260909/analyzer/tests --run-optical -q
 260909/analyzer/.venv/bin/python 260909/analyzer/package.py \
   --bridge 260909/build-analyzer/analyzer/libholo_capture.dylib \
   --native-licenses 260909/build-analyzer/third-party-licenses
 ```
 
-`--bridge` は対象OSのファイル名へ置き換えます。
-macOS版は `.app`、Windows版は `.exe` を含むフォルダ、Ubuntu版は実行ファイルを含むフォルダです。
-パッケージ生成時にカメラなし起動と模擬入力を検証し、依存関係のバージョン、ライセンス、アーカイブのSHA-256を同梱します。
-[専用GitHub Actions](../../.github/workflows/analyzer.yml) はWindows x64、macOS arm64とx64、Ubuntu x64で数値テストと配布物作成を行う設定です。
-`analyzer-v*` タグでは4種類のテストがすべて成功してから、同じタグのAnalyze専用GitHub Releaseへ公開します。
-公開時に既存のDualHoloのLatest指定を変更しません。
-通常のDualHoloビルドでは `HOLO_ANALYZER_BRIDGE` はOFFで、Analyze用の取得ライブラリは作成しません。
-各OSの実カメラとドライバを用いた動作確認は別途必要です。
-Qtの配布方法と対象環境は [Qt for Pythonの配布説明](https://doc.qt.io/qtforpython-6/deployment/index.html) と [対応プラットフォーム](https://doc.qt.io/qt-6/supported-platforms.html) を参照してください。
+`--bridge`は対象OSのライブラリへ置き換えます。
+Ubuntuでは`libholo_capture.so`、WindowsのVisual Studio構成では`analyzer/Release/holo_capture.dll`です。
+ソース起動で別の場所のブリッジを使う場合は、YAMLの`camera_library`または`HOLO_CAPTURE_LIBRARY`に絶対パスを指定します。
+
+`--run-optical`は4096角の数値検証を追加します。
+通常のテストにも、明示的な小さいパディングを使った、既知深度の模擬ホログラムから較正・GSまでの一連の検証が含まれます。
+`HOLO_CAPTURE_LIBRARY`を設定するとネイティブブリッジも模擬入力で検証します。
+実カメラを開くテストはありません。
+
+[専用GitHub Actions](../../.github/workflows/analyzer.yml)がWindows x64、Ubuntu x64、macOS arm64・x64でテストと配布物を作成します。
+アーカイブ化の前後に、カメラなし起動、Python模擬入力、同梱ブリッジの模擬入力を確認します。
+4種類が成功した後、`analyzer-v*`タグのAnalyze専用Releaseに公開します。
+既存DualHoloのLatest指定は変更しません。

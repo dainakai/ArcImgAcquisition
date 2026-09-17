@@ -10,6 +10,10 @@ import yaml
 class Config:
     wavelength_nm: float = 515.0
     pixel_pitch_um: float = 2.74
+    padding_size: int = 4096
+    compute_threads: int = 4
+    peak_prominence_fraction: float = 0.03
+    peak_min_width_samples: float = 1.0
     # Signed optical propagation cam0 -> cam1; must be measured, never inferred
     # from camera numbering. Null deliberately disables phase recovery.
     plane_separation_mm: float | None = None
@@ -25,6 +29,7 @@ class Config:
     calibration_file: str | None = None
     camera_library: str | None = None
     cache_megabytes: int = 192
+    cache_directory: str | None = None
     slider_debounce_ms: int = 160
     calibration_window_px: int = 96
     calibration_step_px: int = 96
@@ -36,7 +41,8 @@ class Config:
     def validate(self):
         for name in ("wavelength_nm", "pixel_pitch_um", "scan_min_mm", "scan_max_mm",
                      "scan_step_mm", "pair_tolerance_ms", "max_clock_uncertainty_ms",
-                     "calibration_max_rms_px", "calibration_max_holdout_px"):
+                     "calibration_max_rms_px", "calibration_max_holdout_px",
+                     "peak_prominence_fraction", "peak_min_width_samples"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                 raise ValueError(f"{name} must be a finite number")
@@ -52,7 +58,10 @@ class Config:
             raise ValueError("scan_max_mm must be >= scan_min_mm")
         if (self.scan_max_mm - self.scan_min_mm) / self.scan_step_mm > 10000:
             raise ValueError("At most 10001 depths per scan")
+        if not 0 <= self.peak_prominence_fraction <= 1 or self.peak_min_width_samples < 1:
+            raise ValueError("Invalid interior-peak prominence or width")
         for name, lo, hi in (("gs_iterations", 1, 10000), ("cache_megabytes", 1, 4096),
+                             ("padding_size", 16, 8192), ("compute_threads", 1, 4),
                              ("slider_debounce_ms", 0, 2000), ("calibration_window_px", 16, 512),
                              ("calibration_step_px", 8, 512), ("calibration_search_px", 2, 512),
                              ("calibration_min_matches", 12, 10000)):
@@ -77,7 +86,7 @@ def load_config(path: Path) -> Config:
     unknown = set(data) - {f.name for f in fields(Config)}
     if unknown:
         raise ValueError(f"Unknown config keys: {', '.join(sorted(unknown))}")
-    for key in ("output_dir", "calibration_file", "camera_library"):
+    for key in ("output_dir", "calibration_file", "camera_library", "cache_directory"):
         if data.get(key):
             p = Path(data[key]).expanduser()
             data[key] = str(p if p.is_absolute() else path.parent / p)

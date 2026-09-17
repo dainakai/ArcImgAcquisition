@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.session_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         tip(self.session_label, str(self.session.path)+"\n現在の保存セッションです。再生画像とCapture画像を同じセッション内に保存します。")
         session_row.addWidget(self.session_label, 1)
+        session_row.addWidget(QLabel("N: 明暗　Q / Esc: 終了"))
         self.session_button = button("新規セッション", self.new_session,
             "以後の画像を保存する新しいセッションを作ります。現在の入力画像や補正は保持します。カメラ接続中は切断してから操作してください。")
         session_row.addWidget(self.session_button)

@@ -121,6 +121,12 @@ class Workspace(QWidget):
             self.main.submit(self, "入力画像を保存", lambda c, p: session.save_raw(pair, config),
                              lambda path: self.main.notify(f"入力画像を保存しました: {path}"))
 
+    def scan_config(self):
+        changes = {f"cam{i}_scan_{edge}_mm": controls[i].value()
+                   for edge, controls in (("min", self.minimum), ("max", self.maximum)) for i in (0, 1)}
+        return replace(self.main.config, **changes, scan_step_mm=self.step.value(),
+                       gs_iterations=self.iterations.value()).validate()
+
     def bind_viewer(self, viewer):
         self.viewers.append(viewer)
         viewer.depthRequested.connect(lambda z: self.request_depth(viewer))
@@ -179,15 +185,17 @@ def instruction(text):
 def scan_controls(config, layout):
     form = QFormLayout()
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-    minimum = number(config.scan_min_mm)
-    maximum = number(config.scan_max_mm)
+    minimum, maximum = [], []
+    for camera in (0, 1):
+        lo, hi = config.scan_bounds(camera)
+        minimum.append(number(lo))
+        maximum.append(number(hi))
+        for label, widget in (("最小", minimum[-1]), ("最大", maximum[-1])):
+            tip(widget, f"cam{camera} 面からの符号付き伝搬距離です。カメラごとに範囲を指定します。位相回復後の探索はcam0の範囲を使います。")
+            form.addRow(f"cam{camera} {label}", widget)
     step = number(config.scan_step_mm, .0001, 100000)
-    for label, widget, help_text in (
-        ("最小深度", minimum, "深度探索を開始する位置です。各入力カメラ面からの符号付き伝搬距離をmmで指定します。"),
-        ("最大深度", maximum, "深度探索を終了する位置です。ピークの両側が入る範囲にしてください。"),
-        ("間隔", step, "深度探索の刻みです。全深度の再生画像を保持します。最小深度からこの間隔で、最大深度以下まで計算します。")):
-        tip(widget, help_text)
-        form.addRow(label, widget)
+    tip(step, "Tamura探索の共通間隔です。各カメラの最小から最大以下まで、元画像サイズで計算します。再生画像スタックは保持しません。")
+    form.addRow("探索間隔", step)
     iterations = QSpinBox()
     iterations.setRange(1, 10000)
     iterations.setValue(config.gs_iterations)
@@ -215,7 +223,7 @@ class AcquisitionWorkspace(Workspace):
         self.control_tabs.addTab(setup_page, "解析条件")
         self.control_tabs.addTab(depth_page, "深度・保存")
         self.control_tabs.setTabToolTip(0, "再生モードと探索範囲を指定してAnalyzeを実行します。")
-        self.control_tabs.setTabToolTip(1, "計算済みの深度を移動し、表示画像をコピー・保存します。")
+        self.control_tabs.setTabToolTip(1, "深度を選んで再生し、表示画像をコピー・保存します。")
         controls = setup_controls
         controls.addWidget(instruction("モードと範囲を指定して、<b>Analyze</b>で深度を探索します。"))
         self.mode = QComboBox()
@@ -227,7 +235,7 @@ class AcquisitionWorkspace(Workspace):
         controls.addWidget(self.mode)
         self.minimum, self.maximum, self.step, self.iterations = scan_controls(main.config, controls)
         self.analyze_button = button("Analyze · 深度探索", self.start_analysis,
-            "選択したモードで全深度を再生し、Tamuraを計算します。位相回復では最初にGSを実行します。結果は全深度で保持され、画面下部の中断ボタンで途中停止できます。")
+            "元画像サイズ・パディングなしでTamura曲線を計算します。位相回復では最初にGSを実行します。画像スタックは保持せず、選んだ深度を平均値パディングで再生します。途中停止できます。")
         controls.addWidget(self.analyze_button)
         self.calibration_label = instruction("キャリブレーション未適用")
         controls.addWidget(self.calibration_label)
@@ -291,12 +299,12 @@ class AcquisitionWorkspace(Workspace):
         if self.main.worker is not None or self.pair is None:
             return
         try:
-            scan = depths(self.minimum.value(), self.maximum.value(), self.step.value())
             mode = self.mode.currentData()
+            camera = 1 if mode == "gabor_cam1" else 0
+            scan = depths(self.minimum[camera].value(), self.maximum[camera].value(), self.step.value())
             if mode == "phase" and self.main.phase_reason(self.pair):
                 raise ValueError(self.main.phase_reason(self.pair))
-            config = replace(self.main.config, gs_iterations=self.iterations.value(),
-                scan_min_mm=self.minimum.value(), scan_max_mm=self.maximum.value(), scan_step_mm=self.step.value()).validate()
+            config = self.scan_config()
             pair, calibration = self.pair, self.main.calibration
             self.clear_results()
             self.analysis_metadata = dict(mode=mode, config=asdict(config), input_token=pair.token,
@@ -315,7 +323,7 @@ class AcquisitionWorkspace(Workspace):
         self.viewer.set_analysis(result)
         self.control_tabs.setCurrentIndex(1)
         self.main.notify(("途中までの結果を保持しました。" if result.stopped else "深度探索が完了しました。")+
-            " スライダー・曲線クリックで計算済み画像を表示できます。"+
+            " スライダー・曲線クリックで選んだ深度を平均値パディングで再生します。"+
             (" 山型ピークがないため、焦点は自動確定していません。" if not result.peaks_filtered else ""))
 
     def copy_image(self):
@@ -346,7 +354,7 @@ class AcquisitionWorkspace(Workspace):
         curve = list(viewer.analysis.curve)
         metadata = dict(self.analysis_metadata, z_mm=rendered.z_mm, filtered=filtered,
             scan_stopped=viewer.analysis.stopped, padding="centered mean of input field",
-            gs_bandlimit=False, contrast_normalized=viewer.normalize,
+            gs_bandlimit=False, tamura_padding="none; native input dimensions", contrast_normalized=viewer.normalize,
             sources=[f.path if f else None for f in pair.frames])
         session, config = self.main.session, self.main.config
         def operation(cancel, progress):
@@ -477,8 +485,8 @@ class CalibrationWorkspace(Workspace):
             return
         try:
             self.pair.require_both()
-            scan = depths(self.minimum.value(), self.maximum.value(), self.step.value())
-            config, pair = self.main.config, self.pair
+            scans = [depths(lo.value(), hi.value(), self.step.value()) for lo, hi in zip(self.minimum, self.maximum)]
+            config, pair = self.scan_config(), self.pair
             self.clear_results()
             self.pages.setCurrentIndex(1)
             def operation(cancel, progress):
@@ -487,7 +495,7 @@ class CalibrationWorkspace(Workspace):
                     try:
                         def camera_progress(stage, current, total, row):
                             progress(f"cam{camera} · {stage}", current, total, {'camera': camera, 'row': row})
-                        result = analyze(pair, f"gabor_cam{camera}", config, None, 1, scan, cancel, camera_progress)
+                        result = analyze(pair, f"gabor_cam{camera}", config, None, 1, scans[camera], cancel, camera_progress)
                     except Cancelled:
                         if completed:
                             return completed

@@ -1,4 +1,4 @@
-"""A cached depth browser shared by acquisition and the two focus calibrations."""
+"""An on-demand depth browser shared by acquisition and the two focus calibrations."""
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
@@ -32,9 +32,16 @@ class DepthViewer(QWidget):
         row.addWidget(QLabel("深度"))
         self.depth = number(0)
         self.depth.setMinimumWidth(128)
-        self.depth.editingFinished.connect(lambda: self.select_depth(self.depth.value()))
-        tip(self.depth, "任意の深度を入力してEnterで再生します。計算済みの深度は保存した画像を直ちに表示し、未計算の深度だけバックグラウンドで計算します。")
+        self.depth.valueChanged.connect(self.select_depth)
+        tip(self.depth, "深度を入力してEnter、または上下ボタンで変更すると直ちに平均値パディングで再生します（既定4096）。探索画像のキャッシュは使用しません。")
         row.addWidget(self.depth)
+        self.depth_step = QComboBox()
+        self.depth_step.addItem("0.1 mm", .1)
+        self.depth_step.addItem("1 mm", 1.)
+        tip(self.depth_step, "深度の上下ボタン・上下キーの移動量を選びます。押すたびに再生計算を開始し、連続操作では最後の指定を優先します。")
+        self.depth_step.currentIndexChanged.connect(lambda: self.depth.setSingleStep(self.depth_step.currentData()))
+        self.depth.setSingleStep(.1)
+        row.addWidget(self.depth_step)
         self.filtered = QCheckBox("帯域制限あり")
         self.filtered.setChecked(True)
         tip(self.filtered, "同じ深度で計算済みの「帯域制限あり／なし」を切り替えます。GSの往復伝搬は常に帯域制限なしです。")
@@ -47,7 +54,7 @@ class DepthViewer(QWidget):
             details.addWidget(self.filtered)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
-        tip(self.slider, "探索で計算した深度を移動します。全深度の再生画像を保持しているため、FFTの再計算は行いません。")
+        tip(self.slider, "探索範囲の深度を選び、その位置を平均値パディングで再生します（既定4096）。連続操作では最後の深度を優先します。")
         self.slider.valueChanged.connect(self.slider_changed)
         details.addWidget(self.slider)
         self.plot = FocusPlot()
@@ -83,11 +90,16 @@ class DepthViewer(QWidget):
     def set_analysis(self, result):
         self.analysis = result
         self.plot.rows = list(result.curve)
+        self.slider.blockSignals(True)
         self.slider.setRange(0, max(0, len(result.curve)-1))
+        self.slider.blockSignals(False)
         self.update_peaks()
         best = result.best_filtered if self.filtered.isChecked() else result.best_unfiltered
-        if best is not None:
-            self.select_depth(best.z_mm)
+        if result.stopped:
+            # Stop must not silently start another padded reconstruction.
+            self.pending_depth = None
+        elif best is not None:
+            self.select_depth(best)
         elif result.curve:
             # Show a neutral middle sample without claiming it is a focus.
             self.select_depth(result.curve[len(result.curve)//2][0])
@@ -96,6 +108,7 @@ class DepthViewer(QWidget):
     def refresh_enabled(self):
         ready = self.analysis is not None
         self.depth.setEnabled(ready)
+        self.depth_step.setEnabled(ready)
         self.slider.setEnabled(ready and bool(self.analysis.curve))
         self.filtered.setEnabled(ready)
         self.peaks.setEnabled(ready and self.peaks.count() > 0)
@@ -115,9 +128,8 @@ class DepthViewer(QWidget):
             self.status.setText("山型ピークなし：範囲を広げるか、曲線と画像を見て焦点を手動指定してください。")
         else:
             suffix = "（中断した範囲の結果）" if self.analysis.stopped else ""
-            cache = self.analysis.reconstruction.cache
-            self.status.setText(f"{len(self.analysis.curve)} 深度を保持 · {len(candidates)} ピーク {suffix}")
-            tip(self.status, f"メモリ保持 {len(cache)-cache.disk_count} 深度、一時ファイル保持 {cache.disk_count} 深度。Resume・再解析・終了時にこのキャッシュを解放します。")
+            self.status.setText(f"{len(self.analysis.curve)} 深度のTamura曲線 · {len(candidates)} ピーク {suffix}")
+        tip(self.status, "Tamuraは元画像サイズ・パディングなしの推定です。表示像は平均値パディングで再計算するため、境界条件が異なります。画像で焦点を微調整してください。")
         self.peaks.setEnabled(bool(candidates))
         self.plot.update()
 
@@ -142,14 +154,11 @@ class DepthViewer(QWidget):
             self.slider.blockSignals(True)
             self.slider.setValue(index)
             self.slider.blockSignals(False)
-        cached = self.analysis.reconstruction.cached(z)
-        if cached is not None:
-            self.pending_depth = None
-            self.show_render(cached)
-        else:
-            self.pending_depth = z
-            self.panel.title.setText(f"{self.base_title} · z = {z:.4f} mm を計算待ち")
-            self.depthRequested.emit(z)
+        if self.rendered is not None and self.rendered.z_mm == z and self.pending_depth is None:
+            return
+        self.pending_depth = z
+        self.panel.title.setText(f"{self.base_title} · z = {z:.4f} mm を再生中")
+        self.depthRequested.emit(z)
 
     def show_render(self, render):
         self.rendered = render

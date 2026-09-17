@@ -1,9 +1,10 @@
 # DualHolo Analyze — camera settings are never written.
 wavelength_nm: 515.0
 pixel_pitch_um: 2.74
+# Display and GS only. Tamura always uses the native image dimensions.
 padding_size: 4096
 compute_threads: 4
-peak_prominence_fraction: 0.03
+peak_prominence_fraction: 0.005
 peak_min_width_samples: 1.0
 # Signed distance in the exp(+i kz z) convention, cam0 -> cam1.
 # Measured inside the calibration tab: z_cam0 - z_cam1.
@@ -11,6 +12,10 @@ peak_min_width_samples: 1.0
 plane_separation_mm: null
 scan_min_mm: 30.0
 scan_max_mm: 90.0
+cam0_scan_min_mm: 30.0
+cam0_scan_max_mm: 90.0
+cam1_scan_min_mm: 30.0
+cam1_scan_max_mm: 90.0
 scan_step_mm: 1.0
 gs_iterations: 20
 serial0: "26259157"
@@ -20,12 +25,10 @@ max_clock_uncertainty_ms: 3.0
 output_dir: captures
 calibration_file: null
 camera_library: null
-cache_megabytes: 192
-cache_directory: null
 slider_debounce_ms: 160
-calibration_window_px: 96
-calibration_step_px: 96
-calibration_search_px: 24
+calibration_window_px: 128
+calibration_step_px: 256
+calibration_search_px: 12
 calibration_min_matches: 15
 calibration_max_rms_px: 1.0
 calibration_max_holdout_px: 1.5

@@ -1,4 +1,4 @@
-"""CPU angular spectrum, unfiltered GS and retained-depth autofocus."""
+"""CPU optics: native-size Tamura scans and mean-padded display reconstruction."""
 from dataclasses import dataclass, field
 import math
 import threading
@@ -6,7 +6,7 @@ import numpy as np
 from scipy import fft, signal
 from optical_padding import mean_pad
 from optical_bandlimit import NumpyAngularSpectrumBandlimit
-from .cache import DepthCache, Render
+from .cache import Render
 
 
 class Cancelled(Exception):
@@ -63,27 +63,29 @@ def focus_peaks(curve, config, column=1):
 
 
 class Propagator:
-    def __init__(self, config):
+    def __init__(self, config, native_shape=None):
         self.side, self.threads = config.padding_size, config.compute_threads
-        self.band = NumpyAngularSpectrumBandlimit(self.side, config.pixel_pitch_um, config.wavelength_nm/1000)
+        self.shape = native_shape or (self.side, self.side)
+        self.native = native_shape is not None
+        self.band = NumpyAngularSpectrumBandlimit(self.shape, config.pixel_pitch_um, config.wavelength_nm/1000)
         self.phase_per_mm = None
 
     def transfer(self, z_mm, cancel, filtered=True):
         if not math.isfinite(z_mm):
             raise ValueError("Nonfinite depth")
-        side = self.side
+        height = self.shape[0]
         if self.phase_per_mm is None:
-            phase = np.empty((side, side), np.float64)
-            fx2, k = self.band.f[None, :]**2, 1/self.band.wavelength_um
-            for start in range(0, side, 128):
+            phase = np.empty(self.shape, np.float64)
+            fx2, k = self.band.fx[None, :]**2, 1/self.band.wavelength_um
+            for start in range(0, height, 128):
                 cancel.check()
                 rows = slice(start, start+128)
-                radius2 = fx2+self.band.f[rows, None]**2
+                radius2 = fx2+self.band.fy[rows, None]**2
                 phase[rows] = -2*np.pi*1000*radius2/(np.sqrt(k*k-radius2)+k)
             self.phase_per_mm = phase
-        out = np.empty((side, side), dtype=np.complex64)
+        out = np.empty(self.shape, dtype=np.complex64)
         attenuate = filtered and not self.band.full_pass(z_mm)
-        for start in range(0, side, 128):
+        for start in range(0, height, 128):
             cancel.check()
             rows = slice(start, start+128)
             out[rows] = np.exp(1j*(self.phase_per_mm[rows]*z_mm))
@@ -93,7 +95,12 @@ class Propagator:
 
     def spectrum(self, field, cancel):
         cancel.check()
-        padded, crop = mean_pad(field, side=self.side)
+        if self.native:
+            if field.shape != self.shape:
+                raise ValueError("Native propagation must preserve the input dimensions")
+            padded, crop = field.copy(), (slice(0, field.shape[0]), slice(0, field.shape[1]))
+        else:
+            padded, crop = mean_pad(field, side=self.side)
         result = fft.fft2(padded, workers=self.threads, overwrite_x=True)
         cancel.check()
         return result, crop
@@ -111,41 +118,40 @@ class Propagator:
 
 class Reconstruction:
     def __init__(self, field, config, cancel):
+        cancel.check()
         self.propagator = Propagator(config)
-        self.spectrum, self.crop = self.propagator.spectrum(field, cancel)
-        self.cache = DepthCache(config.cache_megabytes, config.cache_directory)
-
-    def cached(self, z_mm):
-        return self.cache.get(z_mm)
-
-    def reserve_scan(self, count):
-        shape = tuple(s.stop-s.start for s in self.crop)
-        self.cache.reserve_scan(shape, count)
+        self.field = field
+        self.spectrum = self.crop = None
 
     def render(self, z_mm, cancel):
         key = float(z_mm)
         cancel.check()
-        cached = self.cached(key)
-        if cached is not None:
-            return cached
         prop = self.propagator
-        transfer = prop.transfer(key, cancel, filtered=False)
-        u = prop.from_spectrum(self.spectrum, transfer, self.crop, cancel)
-        unfiltered = (np.abs(u)**2).astype(np.float32)
-        del u
-        if prop.band.full_pass(key):
-            filtered = unfiltered
-        else:
-            for start in range(0, prop.side, 128):
-                cancel.check()
-                rows = slice(start, start+128)
-                transfer[rows] *= prop.band.window(key, rows)
-            u = prop.from_spectrum(self.spectrum, transfer, self.crop, cancel)
-            filtered = (np.abs(u)**2).astype(np.float32)
+        # Prepare the display FFT lazily, after the inexpensive native scan.
+        # Retain the input spectrum, never a stack of reconstructed images.
+        if self.spectrum is None:
+            self.spectrum, self.crop = prop.spectrum(self.field, cancel)
+        filtered, unfiltered = render_intensities(prop, self.spectrum, self.crop, key, cancel)
         result = Render(key, filtered, unfiltered).prepare_preview()
         cancel.check()
-        self.cache.put(result)
         return result
+
+
+def render_intensities(prop, spectrum, crop, key, cancel):
+    transfer = prop.transfer(key, cancel, filtered=False)
+    u = prop.from_spectrum(spectrum, transfer, crop, cancel)
+    unfiltered = (np.abs(u)**2).astype(np.float32)
+    del u
+    if prop.band.full_pass(key):
+        filtered = unfiltered
+    else:
+        for start in range(0, prop.shape[0], 128):
+            cancel.check()
+            rows = slice(start, start+128)
+            transfer[rows] *= prop.band.window(key, rows)
+        u = prop.from_spectrum(spectrum, transfer, crop, cancel)
+        filtered = (np.abs(u)**2).astype(np.float32)
+    return filtered, unfiltered
 
 
 def phase_recover(pair, calibration, config, iterations, cancel, progress):
@@ -184,8 +190,8 @@ def phase_recover(pair, calibration, config, iterations, cancel, progress):
 class Analysis:
     reconstruction: Reconstruction
     curve: list = field(default_factory=list)
-    best_filtered: Render | None = None
-    best_unfiltered: Render | None = None
+    best_filtered: float | None = None
+    best_unfiltered: float | None = None
     stopped: bool = False
     peaks_filtered: list = field(default_factory=list)
     peaks_unfiltered: list = field(default_factory=list)
@@ -202,15 +208,16 @@ def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress)
         if pair.frames[index] is None:
             raise ValueError(f"cam{index} の画像を読み込んでください")
         field = np.sqrt(intensity_input(pair.frames[index].image, config.padding_size))
-    progress(f"{config.padding_size} × {config.padding_size} スペクトルを準備", 0, 0, None)
+    progress(f"Tamura用 {field.shape[1]} × {field.shape[0]} スペクトルを準備（パディングなし）", 0, 0, None)
     result = Analysis(Reconstruction(field, config, cancel))
-    result.reconstruction.reserve_scan(len(scan))
-    del field
+    prop = Propagator(config, native_shape=field.shape)
+    spectrum, crop = prop.spectrum(field, cancel)
     try:
         for i, z in enumerate(scan):
-            rendered = result.reconstruction.render(float(z), cancel)
-            result.curve.append((float(z), tamura(rendered.filtered), tamura(rendered.unfiltered)))
-            progress("Tamura 深度探索", i+1, len(scan), result.curve[-1])
+            filtered, unfiltered = render_intensities(prop, spectrum, crop, float(z), cancel)
+            result.curve.append((float(z), tamura(filtered), tamura(unfiltered)))
+            del filtered, unfiltered
+            progress("Tamura 深度探索（パディングなし）", i+1, len(scan), result.curve[-1])
     except Cancelled:
         if not result.curve:
             raise
@@ -218,7 +225,7 @@ def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress)
     result.peaks_filtered = focus_peaks(result.curve, config, 1)
     result.peaks_unfiltered = focus_peaks(result.curve, config, 2)
     if result.peaks_filtered:
-        result.best_filtered = result.reconstruction.cached(result.curve[result.peaks_filtered[0]][0])
+        result.best_filtered = result.curve[result.peaks_filtered[0]][0]
     if result.peaks_unfiltered:
-        result.best_unfiltered = result.reconstruction.cached(result.curve[result.peaks_unfiltered[0]][0])
+        result.best_unfiltered = result.curve[result.peaks_unfiltered[0]][0]
     return result

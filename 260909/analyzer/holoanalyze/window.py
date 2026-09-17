@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
         self.settings_button.setEnabled(not busy)
         self.session_button.setEnabled(not busy and self.camera is None)
         c = self.config
-        self.optics_label.setText(f"{c.wavelength_nm:g} nm · {c.pixel_pitch_um:g} µm · {c.padding_size}² 平均値パディング · CPU {c.compute_threads} スレッド")
+        self.optics_label.setText(f"{c.wavelength_nm:g} nm · {c.pixel_pitch_um:g} µm · 表示/GS {c.padding_size}² 平均値 · Tamura 原寸 · CPU {c.compute_threads}")
         tip(self.optics_label, "GS往復は帯域制限なし。各深度の再生は、あり／なし両方を保持します。設定ボタンから各条件を変更できます。")
 
     def submit(self, owner, kind, operation, callback):
@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
             self.progress_label.setText("待機中")
         self.update_controls()
         if not self.closing:
-            # Latest requested uncached depth wins; cached browsing never waits.
+            # Latest requested depth wins; display reconstruction runs off the GUI thread.
             for workspace in self.workspaces:
                 workspace.process_pending()
                 if self.worker is not None:
@@ -225,7 +225,10 @@ class MainWindow(QMainWindow):
             for viewer in workspace.viewers:
                 viewer.pending_depth = None
                 if viewer.rendered is not None:
-                    viewer.select_depth(viewer.rendered.z_mm)
+                    viewer.depth.blockSignals(True)
+                    viewer.depth.setValue(viewer.rendered.z_mm)
+                    viewer.depth.blockSignals(False)
+                    viewer.show_render(viewer.rendered)
         if self.worker:
             self.worker.cancel()
             self.progress_label.setText("現在のFFT / 相関ブロックの完了後に中断…")
@@ -302,8 +305,11 @@ class MainWindow(QMainWindow):
         if changed_output:
             self.new_session()
         for workspace in self.workspaces:
-            for widget, value in ((workspace.minimum, config.scan_min_mm), (workspace.maximum, config.scan_max_mm),
-                                  (workspace.step, config.scan_step_mm), (workspace.iterations, config.gs_iterations)):
+            for camera in (0, 1):
+                lo, hi = config.scan_bounds(camera)
+                workspace.minimum[camera].setValue(lo)
+                workspace.maximum[camera].setValue(hi)
+            for widget, value in ((workspace.step, config.scan_step_mm), (workspace.iterations, config.gs_iterations)):
                 widget.setValue(value)
         self.notify("設定を更新しました。" + ("光学条件が変わったため、キャリブレーションを再適用または再計算してください。" if physical_changed else ""))
         self.update_controls()
@@ -333,8 +339,7 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 workspace = self.tabs.currentWidget()
-                config = replace(self.config, scan_min_mm=workspace.minimum.value(), scan_max_mm=workspace.maximum.value(),
-                    scan_step_mm=workspace.step.value(), gs_iterations=workspace.iterations.value()).validate()
+                config = workspace.scan_config()
                 save_config(config, Path(path))
                 self.notify(f"設定を保存しました: {path}")
             except Exception as exc:

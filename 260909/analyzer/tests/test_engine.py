@@ -39,15 +39,16 @@ def test_exact_2d_guard_taper_and_grid():
 
 
 @pytest.mark.optical
-def test_full_4096_identity_constant_and_cache():
-    cancel, config = Cancellation(), Config(cache_megabytes=1)
+def test_full_4096_identity_constant_and_recomputation():
+    cancel, config = Cancellation(), Config()
     intensity = np.random.default_rng(12).uniform(20, 180, (64, 80)).astype(np.float32)
     reconstruction = Reconstruction(np.sqrt(intensity), config, cancel)
-    assert reconstruction.spectrum.shape == (4096, 4096)
+    assert reconstruction.spectrum is None
     rendered = reconstruction.render(0, cancel)
+    assert reconstruction.spectrum.shape == (4096, 4096)
     np.testing.assert_allclose(rendered.filtered, intensity, rtol=2e-5, atol=1e-4)
     np.testing.assert_allclose(rendered.unfiltered, intensity, rtol=2e-5, atol=1e-4)
-    assert reconstruction.render(0, cancel) is rendered
+    assert reconstruction.render(0, cancel) is not rendered
     del reconstruction
     reconstruction = Reconstruction(np.full((64, 80), 10, np.float32), config, cancel)
     rendered = reconstruction.render(180, cancel)
@@ -59,7 +60,7 @@ def test_full_4096_identity_constant_and_cache():
 def test_nonconstant_field_against_analytic_two_frequency_solution():
     # A DC field plus one exact DFT mode has a closed-form propagation result.
     # This independently checks FFT ordering, phase sign and taper attenuation.
-    config, cancel = Config(cache_megabytes=1), Cancellation()
+    config, cancel = Config(), Cancellation()
     side, kx, ky = 4096, 1000, 600
     x = np.arange(side, dtype=np.float64)[None, :]
     y = np.arange(side, dtype=np.float64)[:, None]
@@ -84,7 +85,7 @@ def test_nonconstant_field_against_analytic_two_frequency_solution():
 
 @pytest.mark.optical
 def test_gs_constraints_cancellation_and_incremental_scan():
-    config = replace(Config(), plane_separation_mm=-12, cache_megabytes=1)
+    config = replace(Config(), plane_separation_mm=-12)
     image = np.full((64, 80), 100, np.uint8)
     pair = ImagePair((Frame(image, config.serial0), Frame(image, config.serial1)))
     cal = identity_calibration(image.shape, config)
@@ -99,7 +100,8 @@ def test_gs_constraints_cancellation_and_incremental_scan():
     result = analyze(pair, "gabor_cam0", config, None, 1, [0, 1, 2], cancel, progress)
     assert result.stopped and len(result.curve) == 1 and len(rows) == 1
     assert result.best_filtered is None  # an endpoint is never a focus estimate
-    assert result.reconstruction.cached(0) is not None
+    assert result.reconstruction.spectrum is None
+    assert not hasattr(result.reconstruction, "cache")
     with pytest.raises(Cancelled):
         result.reconstruction.render(1, cancel)
     with pytest.raises(ValueError):

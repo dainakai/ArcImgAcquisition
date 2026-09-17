@@ -95,24 +95,33 @@ def find_partner(selected: Path, tolerance_ms=8.0, max_uncertainty_ms=3.0):
         if int(row["camera"]) != camera:
             raise ValueError("Camera directory disagrees with frames.csv")
         instant = int(row["estimated_exposure_host_ns"])  # not float: preserve all 64 bits
-        if float(row["clock_uncertainty_ms"]) > max_uncertainty_ms:
+        uncertainty = float(row["clock_uncertainty_ms"])
+        if not np.isfinite(uncertainty) or not 0 <= uncertainty <= max_uncertainty_ms:
             return tuple(paths), "選択したフレームの時刻誤差が設定上限を超えています。相方は個別に指定してください。"
-        candidates = [r for r in rows if int(r["camera"]) == 1-camera
-                      and float(r["clock_uncertainty_ms"]) <= max_uncertainty_ms
-                      and abs(int(r["estimated_exposure_host_ns"])-instant) <= tolerance_ms*1e6]
+        def compatible(first, second):
+            u0, u1 = (float(r["clock_uncertainty_ms"]) for r in (first, second))
+            if any(not np.isfinite(u) or not 0 <= u <= max_uncertainty_ms for u in (u0, u1)):
+                return False
+            delta = abs(int(first["estimated_exposure_host_ns"])-int(second["estimated_exposure_host_ns"]))
+            # Same conservative gate as DualHolo's live Pairer: mapped delta plus
+            # both clock-mapping uncertainties must fit within the tolerance.
+            return delta <= (tolerance_ms-u0-u1)*1e6
+        candidates = [r for r in rows if int(r["camera"]) == 1-camera and compatible(row, r)]
         if len(candidates) != 1:
-            return tuple(paths), "許容露光時刻差の範囲で相方が一意に決まりません。「画像を読込」から相方を個別に指定してください。"
+            return tuple(paths), "時計換算の不確かさを含めると相方が一意に決まりません。「画像を読込」から相方を個別に指定してください。"
         partner = candidates[0]
         other_instant = int(partner["estimated_exposure_host_ns"])
         reverse = [r for r in rows if int(r["camera"]) == camera
-                   and abs(int(r["estimated_exposure_host_ns"])-other_instant) <= tolerance_ms*1e6]
+                   and compatible(partner, r)]
         if len(reverse) != 1:
             return tuple(paths), "露光時刻の逆対応が一意ではありません。相方は個別に指定してください。"
         p = _manifest_path(root, partner["file"])
         if not p.is_file():
             return tuple(paths), "frames.csvにある相方の画像ファイルが見つかりません。"
         paths[1-camera] = p
-        return tuple(paths), f"露光時刻差 {abs(other_instant-instant)/1e6:.3f} ms のペアを読み込みました。"
+        uncertainty_sum = uncertainty+float(partner["clock_uncertainty_ms"])
+        return tuple(paths), (f"ペア読込：ホスト時計へ換算した推定露光時刻差 {abs(other_instant-instant)/1e6:.3f} ms、"
+                              f"換算の不確かさの合計 {uncertainty_sum:.3f} ms。実際の露光同期精度を保証する値ではありません。")
     # Old DualHolo: event_.../frame_000019/cam0_serial.tiff + cam1_serial.tiff.
     if re.match(r"cam[01]_", selected.name):
         partners = sorted(p for p in selected.parent.glob(f"cam{1-camera}_*")

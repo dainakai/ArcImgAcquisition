@@ -29,9 +29,9 @@ def test_exposure_pairing_survives_missing_frame_and_integer_precision(tmp_path)
     epoch = 2**60
     paths = recording(tmp_path, [(0, 1, epoch), (0, 2, epoch+100_000_000),
                                   (1, 1, epoch+100_000_010), (1, 2, epoch+200_000_000)])
-    pair, note = find_partner(paths[1], tolerance_ms=.00002)
+    pair, note = find_partner(paths[1], tolerance_ms=.04002)
     assert pair == (paths[1], paths[2])
-    assert "露光時刻差" in note
+    assert "推定露光時刻差" in note and "不確かさの合計 0.040" in note
     assert find_partner(paths[0])[0] == (paths[0], None)
     loaded, _ = load_pair(paths[2], Config())
     assert loaded.frames[0].serial == "26259157"
@@ -92,3 +92,12 @@ def test_float_tiff_and_png_saving(tmp_path):
         np.testing.assert_array_equal(read_image(p), intensity if suffix == ".tiff" else preview)
         assert json.loads(p.with_suffix(suffix+".json").read_text())["z_mm"] == 10
         assert not list(tmp_path.glob("*.partial*"))
+
+
+def test_pairing_includes_both_clock_uncertainties(tmp_path):
+    paths = recording(tmp_path, [(0, 1, 1000000000), (1, 1, 1007980000)])
+    # Mapped delta is 7.98 ms, but its two 0.02 ms mapping errors exceed 8 ms.
+    assert find_partner(paths[0], tolerance_ms=8)[0][1] is None
+    pair, note = find_partner(paths[0], tolerance_ms=8.1)
+    assert pair == tuple(paths)
+    assert '推定露光時刻差 7.980 ms' in note and '実際の露光同期精度を保証' in note

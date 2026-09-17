@@ -3,8 +3,7 @@ import time
 import numpy as np
 from PySide6.QtCore import QTimer, Qt, QPoint
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider
-from holoanalyze.cache import DepthCache
+from PySide6.QtWidgets import QApplication, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider, QStyleOptionSpinBox, QStyle
 from holoanalyze.config import Config
 from holoanalyze.data import Frame, ImagePair
 from holoanalyze.engine import Analysis, Render
@@ -37,7 +36,7 @@ def test_offline_window_really_closes(app, tmp_path):
     assert w.isVisible() and w.camera is None
     assert w.tabs.count() == 2
     assert not any('Rec' in b.text() for b in w.findChildren(QPushButton))
-    for cls in (QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider):
+    for cls in (QPushButton, QDoubleSpinBox, QSpinBox, QComboBox, QSlider, QStyleOptionSpinBox, QStyle):
         assert all(widget.toolTip() for widget in w.findChildren(cls))
     close(app, w)
 
@@ -103,10 +102,6 @@ def test_connection_failure_keeps_gui_usable(app, tmp_path, monkeypatch):
 class FakeReconstruction:
     def __init__(self):
         self.calls = []
-        self.cache = DepthCache(1)
-
-    def cached(self, z):
-        return self.cache.get(z)
 
     def render(self, z, cancel):
         self.calls.append(z)
@@ -114,11 +109,10 @@ class FakeReconstruction:
             cancel.check()
             time.sleep(.005)
         result = Render(z, np.full((40, 50), z, np.float32), np.full((40, 50), z+1, np.float32)).prepare_preview()
-        self.cache.put(result)
         return result
 
 
-def test_latest_depth_wins_cache_plot_toggle_clipboard_and_resume(app, tmp_path):
+def test_latest_depth_wins_recompute_plot_toggle_clipboard_and_resume(app, tmp_path):
     w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
     w.show()
     a, viewer = w.acquisition, w.acquisition.viewer
@@ -143,12 +137,30 @@ def test_latest_depth_wins_cache_plot_toggle_clipboard_and_resume(app, tmp_path)
     wait(app, lambda: w.worker is None)
     viewer.analysis.curve = [(40, 1, 1), (42, 2, 2)]
     viewer.set_analysis(viewer.analysis)
+    wait(app, lambda: w.worker is None)
+    viewer.select_depth(40)
+    wait(app, lambda: w.worker is None)
     before = reconstruction.calls[:]
     rect = viewer.plot.plot_rect()
     QTest.mouseClick(viewer.plot, Qt.MouseButton.LeftButton, pos=QPoint(int(rect.right()-1), int(rect.center().y())))
-    assert viewer.rendered.z_mm == 42 and reconstruction.calls == before
+    wait(app, lambda: w.worker is None)
+    assert viewer.rendered.z_mm == 42 and len(reconstruction.calls) == len(before)+1
     viewer.slider.setValue(0)
-    assert viewer.rendered.z_mm == 40 and reconstruction.calls == before
+    wait(app, lambda: w.worker is None)
+    assert viewer.rendered.z_mm == 40 and len(reconstruction.calls) == len(before)+2
+    viewer.depth_step.setCurrentIndex(0)
+    option = QStyleOptionSpinBox()
+    viewer.depth.initStyleOption(option)
+    up = viewer.depth.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxUp, viewer.depth)
+    QTest.mouseClick(viewer.depth, Qt.MouseButton.LeftButton, pos=up.center())
+    assert viewer.pending_depth == 40.1
+    wait(app, lambda: w.worker is None)
+    assert viewer.rendered.z_mm == 40.1
+    viewer.depth_step.setCurrentIndex(1)
+    QTest.keyClick(viewer.depth, Qt.Key.Key_Down)
+    assert viewer.pending_depth == 39.1
+    wait(app, lambda: w.worker is None)
+    assert viewer.rendered.z_mm == 39.1
     viewer.select_depth(43)
     a.resume()
     wait(app, lambda: w.worker is None)
@@ -210,4 +222,14 @@ def test_first_save_dialog_uses_session_directory(app, tmp_path, monkeypatch):
     c.save_calibration()
     assert len(selected) == 2 and all(path.is_relative_to(w.session.path) for path in selected)
     assert selected[0].parent.name == 'reconstructions'
+    close(app, w)
+
+
+def test_stopped_scan_does_not_start_display_work(app, tmp_path):
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
+    reconstruction = FakeReconstruction()
+    w.acquisition.viewer.set_analysis(Analysis(reconstruction, curve=[(1, 1, 1), (2, 2, 2)], stopped=True))
+    app.processEvents()
+    assert w.worker is None and not reconstruction.calls
+    assert w.acquisition.viewer.depth.isEnabled()
     close(app, w)

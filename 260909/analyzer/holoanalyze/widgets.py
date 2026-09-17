@@ -248,45 +248,64 @@ class FocusPlot(QWidget):
 
 
 class VectorPlot(QWidget):
+    """Scientific quiver plot: calibrated coordinates, colorbar and arrow key."""
     def __init__(self, title):
         super().__init__()
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
         self.title, self.vectors, self.shape = title, [], (1, 1)
-        self.setMinimumSize(240, 200)
-        tip(self, "各矢印は対応点の変位です。補正後は残差を示します。矢印は見やすい倍率で表示し、図中の倍率・スケールで実画素量を確認できます。")
+        self.setMinimumSize(320, 330)
+        layout = QVBoxLayout(self)
+        label = QLabel(title)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.figure = Figure(figsize=(5, 5), layout="constrained", facecolor="white")
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        layout.addWidget(self.canvas, 1)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        tip(self, "cam0座標系の実測対応点です。色は変位の大きさ（px）、矢印は図中のキーに示す尺度です。補正前後で色範囲・矢印倍率は異なるので各カラーバーを確認してください。描画のみ最大約144点に間引き、フィットには全採用点を使います。")
+        self.set_vectors([], (1, 1))
 
     def set_vectors(self, vectors, shape):
+        from matplotlib import colors, ticker
         self.vectors, self.shape = vectors, shape
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), QColor("#f8fafc"))
-        p.setPen(QColor("#465464")); p.drawText(12, 22, self.title)
-        if not len(self.vectors):
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "ベクトルマップ計算後に表示します")
+        self.figure.clear()
+        self.axes = ax = self.figure.add_subplot(111)
+        ax.set_facecolor("#fafafa")
+        if not len(vectors):
+            ax.set_axis_off()
+            self.summary.setText("ベクトルマップ計算後に表示します。")
+            self.canvas.draw_idle()
             return
-        data = np.asarray(self.vectors)
-        h, w = self.shape
-        scale = min((self.width()-40)/w, (self.height()-100)/h)
-        origin = QPointF((self.width()-w*scale)/2, 40)
+        data = np.asarray(vectors, dtype=float)
+        h, w = shape
         magnitude = np.linalg.norm(data[:, 2:4], axis=1)
-        gain = min(100, max(1, 20/max(float(np.percentile(magnitude, 90))*scale, .1)))
-        p.setPen(QPen(QColor("#c6cfd8"), 1))
-        p.drawRect(QRectF(origin, QPointF(origin.x()+w*scale, origin.y()+h*scale)))
-        p.setPen(QPen(QColor("#247e96"), 1.3))
-        stride = max(1, int(np.ceil(len(data)/500)))
-        for x, y, dx, dy in data[::stride]:
-            start = origin+QPointF(x*scale, y*scale)
-            end = start+QPointF(dx*scale*gain, dy*scale*gain)
-            p.drawLine(start, end)
-            angle = math.atan2(dy, dx)
-            for offset in (-.55, .55):
-                p.drawLine(end, end-QPointF(4*math.cos(angle+offset), 4*math.sin(angle+offset)))
+        # One real correspondence per spatial cell, never averaged fake arrows.
+        cell = max(w, h)/12
+        cells = np.floor(data[:, :2]/cell).astype(int)
+        _, indices = np.unique(cells, axis=0, return_index=True)
+        shown = data[indices]
+        shown_magnitude = magnitude[indices]
+        vmax = max(float(magnitude.max()), .01)
+        gain = .45*cell/max(float(np.percentile(magnitude, 90)), .001)
+        quiver = ax.quiver(shown[:, 0], shown[:, 1], shown[:, 2], shown[:, 3], shown_magnitude,
+            cmap="viridis", norm=colors.Normalize(0, vmax), angles="xy", scale_units="xy",
+            scale=1/gain, width=.005, pivot="mid")
+        ax.set(xlim=(-.5, w-.5), ylim=(h-.5, -.5), xlabel="cam0 x [px]", ylabel="cam0 y [px]")
+        ax.set_aspect("equal", adjustable="box")
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(5, integer=True))
+        ax.yaxis.set_major_locator(ticker.MaxNLocator(5, integer=True))
+        ax.tick_params(labelsize=9)
+        ax.grid(alpha=.2)
+        colorbar = self.figure.colorbar(quiver, ax=ax, shrink=.82, pad=.03)
+        colorbar.set_label("Displacement magnitude [px]", fontsize=9)
+        colorbar.ax.tick_params(labelsize=8)
+        key = .18*w/gain
+        decade = 10**math.floor(math.log10(key))
+        key = max(1, round(key/decade))*decade
+        ax.quiverkey(quiver, .12, 1.07, key, f"{key:g} px", labelpos="E", coordinates="axes", fontproperties={"size": 9})
         rms = float(np.sqrt(np.mean(magnitude**2)))
-        p.setPen(QColor("#465464"))
-        p.drawText(12, self.height()-32, f"{len(data)} 点 · RMS {rms:.3f} px · 矢印倍率 {gain:.1f}×")
-        unit = max(.1, round(35/max(scale*gain, .01), 1))
-        length = unit*scale*gain
-        p.drawLine(QPointF(15, self.height()-14), QPointF(15+length, self.height()-14))
-        p.drawText(int(22+length), self.height()-9, f"{unit:g} px")
+        self.summary.setText(f"実測 {len(data)} 点 · 表示 {len(shown)} 点\nRMS {rms:.4f} px · 矢印倍率 {gain:.2g}倍（色は実変位）")
+        self.canvas.draw_idle()

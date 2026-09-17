@@ -71,26 +71,31 @@ class NumpyAngularSpectrumBandlimit:
     """
     def __init__(self, side, pitch_um, wavelength_um, taper_fraction=.05, nyquist_guard=1e-6):
         import numpy as np
-        if isinstance(side, bool) or not isinstance(side, int) or not 16 <= side <= 8192:
+        shape = (side, side) if isinstance(side, int) else side
+        if not isinstance(shape, tuple) or len(shape) != 2 or any(
+                isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 8192 for n in shape):
             raise ValueError('Invalid explicitly selected optical grid')
         if not all(math.isfinite(v) and v > 0 for v in (pitch_um, wavelength_um)):
             raise ValueError('Invalid optical sampling')
         if not 0 < taper_fraction < 1 or not 0 < nyquist_guard < .01:
             raise ValueError('Invalid taper or numerical guard')
-        self.f = np.fft.fftfreq(side, d=pitch_um)
+        self.fy = np.fft.fftfreq(shape[0], d=pitch_um)
+        self.fx = np.fft.fftfreq(shape[1], d=pitch_um)
+        self.f = self.fx  # compatibility with square-grid callers
         self.pitch_um = float(pitch_um)
         self.wavelength_um = float(wavelength_um)
-        self.extent_um = side * pitch_um
+        self.extent_um = shape[1] * pitch_um
+        self.extent_y_um = shape[0] * pitch_um
         self.safe_ratio = 1 - nyquist_guard
         self.taper_fraction = taper_fraction
-        if wavelength_um**-2 <= 2 * np.max(self.f**2):
+        if wavelength_um**-2 <= np.max(self.fx**2) + np.max(self.fy**2):
             raise ValueError('Non-propagating spatial frequencies are unsupported')
 
     def full_pass(self, z_mm):
-        """Exact worst-case q over the square sampled grid, including its corners."""
+        """Exact worst-case q over the sampled grid, including its corners."""
         import numpy as np
-        fmax = float(np.max(np.abs(self.f)))
-        qmax = 2000*abs(float(z_mm))*fmax/self.extent_um/math.sqrt(self.wavelength_um**-2-2*fmax*fmax)
+        fx, fy = float(np.max(np.abs(self.fx))), float(np.max(np.abs(self.fy)))
+        qmax = 2000*abs(float(z_mm))*max(fx/self.extent_um, fy/self.extent_y_um)/math.sqrt(self.wavelength_um**-2-fx*fx-fy*fy)
         return qmax <= self.safe_ratio*(1-self.taper_fraction)
 
     def window(self, z_mm, rows=slice(None)):
@@ -98,10 +103,10 @@ class NumpyAngularSpectrumBandlimit:
         z = abs(float(z_mm))
         if not math.isfinite(z):
             raise ValueError('Nonfinite propagation distance')
-        fx = np.abs(self.f[None, :])
-        fy = np.abs(self.f[rows, None])
-        scale = 2000 * z / self.extent_um / np.sqrt(self.wavelength_um**-2-fx*fx-fy*fy)
+        fx = np.abs(self.fx[None, :])
+        fy = np.abs(self.fy[rows, None])
+        scale = 2000 * z / np.sqrt(self.wavelength_um**-2-fx*fx-fy*fy)
         width = self.safe_ratio * self.taper_fraction
-        tx = np.clip((self.safe_ratio-scale*fx)/width, 0, 1)
-        ty = np.clip((self.safe_ratio-scale*fy)/width, 0, 1)
+        tx = np.clip((self.safe_ratio-scale*fx/self.extent_um)/width, 0, 1)
+        ty = np.clip((self.safe_ratio-scale*fy/self.extent_y_um)/width, 0, 1)
         return ((.5-.5*np.cos(np.pi*tx))*(.5-.5*np.cos(np.pi*ty))).astype(np.float32)

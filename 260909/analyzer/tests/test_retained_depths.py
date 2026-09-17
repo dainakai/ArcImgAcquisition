@@ -3,7 +3,7 @@ from pathlib import Path
 import gc
 import numpy as np
 import pytest
-from holoanalyze.cache import DepthCache, Render
+from holoanalyze.cache import Render
 from holoanalyze.config import Config, save_config, load_config
 from holoanalyze.data import Frame, ImagePair
 from holoanalyze.engine import Cancellation, Propagator, focus_peaks, phase_recover
@@ -11,31 +11,8 @@ from optical_padding import mean_pad
 from test_calibration import identity_calibration
 
 
-def test_scan_keeps_every_depth_and_disk_views_outlive_cache(tmp_path):
-    cache = DepthCache(1, tmp_path)
-    cache.reserve_scan((256, 256), 7)
-    original = np.arange(256*256, dtype=np.float32).reshape(256, 256)
-    for z in range(7):
-        cache.put(Render(z, original+z, original-z))
-    assert len(cache) == 7 and cache.disk_count == 6
-    for z in range(7):
-        render = cache.get(z)
-        np.testing.assert_array_equal(render.filtered, original+z)
-        np.testing.assert_array_equal(render.unfiltered, original-z)
-    mapped = cache.get(6)
-    directory = Path(cache.temporary.name)
-    pixels = mapped.pixels(False)
-    del render, cache, mapped
-    gc.collect()
-    assert directory.exists(), 'A live mapped image must keep the cache alive'
-    assert pixels.shape == original.shape
-    del pixels
-    gc.collect()
-    assert not directory.exists(), 'All temporary frames should be removed after their last view'
-
-
 def test_interior_peak_ignores_high_boundary_and_rejects_flat_monotonic():
-    config = Config()
+    config = replace(Config(), peak_prominence_fraction=.03)
     def curve(values):
         return [(i, v, v) for i, v in enumerate(values)]
     assert focus_peaks(curve([20, 8, 2, 4, 7, 4, 2, 1]), config) == [4]
@@ -47,7 +24,7 @@ def test_interior_peak_ignores_high_boundary_and_rejects_flat_monotonic():
 
 
 def test_explicit_padding_threads_and_yaml_roundtrip(tmp_path, monkeypatch):
-    config = replace(Config(), padding_size=128, compute_threads=3, cache_directory=str(tmp_path))
+    config = replace(Config(), padding_size=128, compute_threads=3)
     save_config(config, tmp_path/'settings.yaml')
     assert load_config(tmp_path/'settings.yaml').compute_threads == 3
     field = np.full((40, 50), 2+3j, np.complex64)

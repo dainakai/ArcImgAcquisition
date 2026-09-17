@@ -81,7 +81,7 @@ def main():
                "--add-data", f"{root / 'config.yaml'}{os.pathsep}.",
                "--add-data", f"{root / 'README.md'}{os.pathsep}.",
                "--add-binary", f"{args.bridge.resolve()}{os.pathsep}native",
-               "--exclude-module", "torch", "--exclude-module", "matplotlib",
+               "--exclude-module", "torch",
                str(root / "run.py")]
     if sys.platform == "darwin":
         command[3:3] = ["--osx-bundle-identifier", "org.dainakai.DualHoloAnalyze"]
@@ -136,7 +136,7 @@ def main():
     licenses = release / "licenses"
     licenses.mkdir()
     installed = {}
-    for dependency in ("numpy", "scipy", "opencv-python-headless", "PySide6", "PySide6-Essentials", "PySide6-Addons", "shiboken6", "PyYAML", "tifffile"):
+    for dependency in ("numpy", "scipy", "opencv-python-headless", "PySide6", "PySide6-Essentials", "PySide6-Addons", "shiboken6", "PyYAML", "tifffile", "matplotlib", "contourpy", "cycler", "fonttools", "kiwisolver", "packaging", "pillow", "pyparsing", "python-dateutil", "six"):
         dist = metadata.distribution(dependency)
         installed[dependency] = dist.version
         for source in dist.files or []:

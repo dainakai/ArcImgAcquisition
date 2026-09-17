@@ -89,10 +89,43 @@ class Calibration:
 
 
 def signal(image):
-    f = image.astype(np.float32)
-    low = cv2.GaussianBlur(f, (0, 0), 24)
+    # Same dark-dot signal as registration/compute_map.py (dot_signal).
+    # Normalize the floor by brightness so float reconstructions and camera DN
+    # give the same correspondences. Twin-image halos are not the target texture.
+    f = cv2.GaussianBlur(image.astype(np.float32), (0, 0), 1)
+    low = cv2.GaussianBlur(f, (0, 0), 32)
     ratio = f/np.maximum(low, max(float(f.mean())*.02, 1e-9))
-    return cv2.GaussianBlur(ratio-1, (0, 0), 1)
+    return cv2.GaussianBlur(np.maximum(.75-ratio, 0), (0, 0), 1)
+
+
+def coarse_translation(a, b, cancel):
+    """Consensus of five patch matches, as in the previously selected PIV method.
+
+    Do not use a single phase-correlation peak: Gabor twin-image texture can
+    dominate it. Downsampling here is only for image matching, never propagation.
+    """
+    small = [cv2.resize(im, None, fx=.25, fy=.25, interpolation=cv2.INTER_AREA) for im in (a, b)]
+    h, w = small[0].shape
+    width = min(96, min(h, w)//4)
+    if width < 8:
+        raise ValueError("ガラスプレート画像が小さすぎます")
+    estimates = []
+    for ux, uy in ((.5, .5), (.4, .4), (.6, .4), (.4, .6), (.6, .6)):
+        cancel.check()
+        x, y = ux*w-.5, uy*h-.5
+        radius = min(128, int(min(x, y, w-1-x, h-1-y)-(width-1)/2)-1)
+        if radius < 4:
+            continue
+        result = match(*small, (x, y), width, radius, (0, 0), min_score=.4)
+        if result is not None:
+            estimates.append(result[0]*4)
+    if len(estimates) < 3:
+        raise ValueError("ドットの大域対応が3領域以上で求まりません。ガラスプレートの焦点・コントラスト・共通視野を確認してください。")
+    guess = np.median(estimates, axis=0)
+    agrees = np.linalg.norm(np.asarray(estimates)-guess, axis=1) <= 8
+    if agrees.sum() < 3:
+        raise ValueError("複数領域の大域対応が一致しません。焦点位置とガラスプレート画像を確認してください。")
+    return np.median(np.asarray(estimates)[agrees], axis=0)
 
 
 def design(xy, shape):
@@ -116,7 +149,7 @@ def subpixel_peak(correlation, x, y):
     return offset if np.max(np.abs(offset)) <= 1 else None
 
 
-def match(a, b, point, width, radius, guess):
+def match(a, b, point, width, radius, guess, min_score=.50):
     x, y = point
     half = (width-1)/2
     if x-half < 0 or y-half < 0 or x+half >= a.shape[1] or y+half >= a.shape[0]:
@@ -131,7 +164,7 @@ def match(a, b, point, width, radius, guess):
     corr = cv2.matchTemplate(b[sy:sy+size, sx:sx+size], patch, cv2.TM_CCOEFF_NORMED)
     _, score, _, (px, py) = cv2.minMaxLoc(corr)
     offset = subpixel_peak(corr, px, py)
-    if offset is None or score < .50:
+    if offset is None or score < min_score:
         return None
     yy, xx = np.indices(corr.shape)
     distant = corr[(xx-px)**2+(yy-py)**2 > 25]
@@ -160,13 +193,14 @@ def measure_vectors(images, config, cancel, progress):
     if min(h, w) < 2*config.calibration_window_px:
         raise ValueError("Calibration image is too small for the configured interrogation window")
     cancel.check()
-    guess, response = cv2.phaseCorrelate(a.copy(), b.copy(), cv2.createHanningWindow((w, h), cv2.CV_32F))
-    if response < .02:
-        raise ValueError("No trustworthy coarse correspondence; check glass-plate focus and orientation")
+    progress("ドット強調・5領域の大域対応", 0, 0, None)
+    guess = coarse_translation(a, b, cancel)
     radius, width, step = config.calibration_search_px, config.calibration_window_px, config.calibration_step_px
-    half = (width-1)/2
-    points = [(x, y) for y in np.arange(half+radius, h-half-radius, step)
-              for x in np.arange(half+radius, w-half-radius, step)]
+    # Half-pixel centers, a full interrogation-window margin, and a sparse grid.
+    # Defaults: previous selected 128 px windows / ±12 px, sampled every 256 px.
+    origin = max(width-.5, (width-1)/2+radius)
+    points = [(x, y) for y in np.arange(origin, h-origin, step)
+              for x in np.arange(origin, w-origin, step)]
     xy, disp, conf = [], [], []
     for n, point in enumerate(points):
         cancel.check()
@@ -174,11 +208,11 @@ def measure_vectors(images, config, cancel, progress):
         if result is not None:
             delta, quality = result
             reverse = match(b, a, np.array(point)+delta, width, 4, -delta)
-            if reverse is not None and np.linalg.norm(reverse[0]+delta) < .75:
+            if reverse is not None and np.linalg.norm(reverse[0]+delta) < 1.:
                 xy.append(point)
                 disp.append(delta)
                 conf.append(quality)
-        progress("Subpixel calibration", n+1, len(points), None)
+        progress(f"PIV {width}px / ±{radius}px · 採用 {len(xy)}点", n+1, len(points), None)
     if len(xy) < config.calibration_min_matches:
         raise ValueError(f"Only {len(xy)} reliable correspondences; need {config.calibration_min_matches}")
     return np.array(xy), np.array(disp), np.array(conf)
@@ -195,7 +229,8 @@ def fit_maps(images, config, cancel, progress):
     if good.sum() < config.calibration_min_matches or rms > config.calibration_max_rms_px:
         raise ValueError(f"Calibration rejected: {good.sum()} inliers, RMS {rms:.3f} px")
     # Leave out interleaved spatial points; fit residual alone is insufficient.
-    grid = np.rint((xy-[half+radius, half+radius])/step).astype(int)
+    origin = max(width-.5, half+radius)
+    grid = np.rint((xy-origin)/step).astype(int)
     train = ((grid[:, 0]+grid[:, 1]) % 2 == 0) & good
     test = ~train & good
     if min(train.sum(), test.sum()) < 9:
@@ -220,6 +255,9 @@ def fit_maps(images, config, cancel, progress):
         raise ValueError("Calibrated support covers less than 10% of the image")
     stats = dict(matches=len(xy), inliers=int(good.sum()), rms_px=rms, holdout_rms_px=holdout,
                  calibrated_fraction=float(calibrated.mean()), coefficients=coefficients.tolist(),
+                 registration_method="dark-dot consensus + narrow PIV + 2D quadratic peak + robust quadratic map",
+                 registration_settings=dict(window_px=width, grid_step_px=step, search_radius_px=radius,
+                                            ncc_min=.5, forward_backward_max_px=1.),
                  vectors_before=np.column_stack([xy[good], disp[good]]).tolist())
     return mx, my, valid, calibrated, stats
 
@@ -276,7 +314,7 @@ def build_calibration(pair, config, focus_depths, scan, cancel, progress):
             result = analyze(pair, f"gabor_cam{camera}", config, None, 1, scan, cancel, progress)
             if result.best_filtered is None:
                 raise ValueError(f"cam{camera} に山型のピークがありません。範囲を変更するか焦点を手動指定してください。")
-            best = result.best_filtered
+            best = result.reconstruction.render(result.best_filtered, cancel)
         else:
             reconstruction = Reconstruction(np.sqrt(intensity_input(pair.frames[camera].image, config.padding_size)), config, cancel)
             best = reconstruction.render(focus_depths[camera], cancel)

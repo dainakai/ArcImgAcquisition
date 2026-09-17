@@ -19,7 +19,9 @@ def wait(app, condition, timeout=15):
         app.processEvents()
         if condition():
             return
-        QTest.qWait(10)
+        # qWait can retain the Python GIL in PySide builds and starve the
+        # QThread's Python work. Pump Qt explicitly, then yield the GIL.
+        time.sleep(.01)
     raise AssertionError('Qt condition timed out')
 
 

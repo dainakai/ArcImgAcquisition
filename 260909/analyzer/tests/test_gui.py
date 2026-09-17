@@ -182,3 +182,30 @@ def test_settings_controls_apply_explicit_optical_values(app):
     assert dialog.result_config.padding_size == 2048
     assert dialog.result_config.compute_threads == 3
     assert dialog.result_config.wavelength_nm == 532
+
+
+def test_first_save_dialog_uses_session_directory(app, tmp_path, monkeypatch):
+    from pathlib import Path
+    from PySide6.QtWidgets import QFileDialog
+    w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
+    image = np.ones((32, 40), np.float32)
+    a, c = w.acquisition, w.calibration_tab
+    a.set_pair(ImagePair((Frame(image, w.config.serial0), Frame(image, w.config.serial1))))
+    a.analysis_metadata = {'mode': 'gabor_cam0'}
+    a.viewer.rendered = Render(50, image, image)
+    c.candidate = identity_calibration(image.shape, w.config)
+    selected = []
+    def inspect_dialog(parent, title, path, filters):
+        assert Path(path).parent.is_dir(), 'Qt falls back to the working directory for nonexistent parents'
+        dialog = QFileDialog(parent, title, path, filters)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        assert Path(dialog.selectedFiles()[0]) == Path(path)
+        selected.append(Path(path))
+        return '', ''
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', inspect_dialog)
+    a.save_image()
+    c.save_calibration()
+    assert len(selected) == 2 and all(path.is_relative_to(w.session.path) for path in selected)
+    assert selected[0].parent.name == 'reconstructions'
+    close(app, w)

@@ -330,6 +330,12 @@ class AcquisitionWorkspace(Workspace):
         filtered = viewer.filtered.isChecked()
         rendered, pair = viewer.rendered, self.pair
         default = self.main.session.default_result(pair, self.analysis_metadata['mode'], rendered.z_mm, filtered)
+        try:
+            self.main.session.ensure(self.main.config)
+            default.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self.main.notify(str(exc))
+            return
         path, selected = QFileDialog.getSaveFileName(self, "再生画像を保存", str(default), "TIFF 強度 (*.tiff);;PNG 表示画像 (*.png)")
         if not path:
             return
@@ -617,6 +623,11 @@ class CalibrationWorkspace(Workspace):
         if self.candidate is None:
             return
         default = self.main.session.path / "calibration.npz"
+        try:
+            self.main.session.ensure(self.main.config)
+        except Exception as exc:
+            self.main.notify(str(exc))
+            return
         path, _ = QFileDialog.getSaveFileName(self, "補正データを保存", str(default), "補正データ (*.npz)")
         if path:
             if not Path(path).suffix:

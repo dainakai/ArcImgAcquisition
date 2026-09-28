@@ -17,11 +17,11 @@ cv2.ocl.setUseOpenCL(False)
 
 
 def pytest_addoption(parser):
-    parser.addoption("--run-optical", action="store_true", help="Run full 4096 CPU propagation on an authorized compute host")
+    parser.addoption("--run-optical", action="store_true", help="Run full 4096/8192 CPU propagation on an authorized compute host")
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "optical: full 4096-square propagation; authorized compute host only")
+    config.addinivalue_line("markers", "optical: full 4096/8192-square propagation; authorized compute host only")
 
 
 def pytest_collection_modifyitems(config, items):

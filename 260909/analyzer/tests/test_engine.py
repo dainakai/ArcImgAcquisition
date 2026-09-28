@@ -39,7 +39,7 @@ def test_exact_2d_guard_taper_and_grid():
 
 
 @pytest.mark.optical
-def test_full_4096_identity_constant_and_recomputation():
+def test_full_4096_identity_constant_and_reuse():
     cancel, config = Cancellation(), Config()
     intensity = np.random.default_rng(12).uniform(20, 180, (64, 80)).astype(np.float32)
     reconstruction = Reconstruction(np.sqrt(intensity), config, cancel)
@@ -48,7 +48,7 @@ def test_full_4096_identity_constant_and_recomputation():
     assert reconstruction.spectrum.shape == (4096, 4096)
     np.testing.assert_allclose(rendered.filtered, intensity, rtol=2e-5, atol=1e-4)
     np.testing.assert_allclose(rendered.unfiltered, intensity, rtol=2e-5, atol=1e-4)
-    assert reconstruction.render(0, cancel) is not rendered
+    assert reconstruction.render(0, cancel) is rendered
     del reconstruction
     reconstruction = Reconstruction(np.full((64, 80), 10, np.float32), config, cancel)
     rendered = reconstruction.render(180, cancel)
@@ -101,7 +101,7 @@ def test_gs_constraints_cancellation_and_incremental_scan():
     assert result.stopped and len(result.curve) == 1 and len(rows) == 1
     assert result.best_filtered is None  # an endpoint is never a focus estimate
     assert result.reconstruction.spectrum is None
-    assert not hasattr(result.reconstruction, "cache")
+    assert not result.reconstruction.cache.memory and not result.reconstruction.cache.files
     with pytest.raises(Cancelled):
         result.reconstruction.render(1, cancel)
     with pytest.raises(ValueError):

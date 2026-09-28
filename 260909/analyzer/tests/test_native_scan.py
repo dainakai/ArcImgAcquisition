@@ -1,4 +1,4 @@
-"""Native rectangular focus FFTs are separate from selected-depth display FFTs."""
+"""Mean-padded focus FFTs are independent of selected-depth display padding."""
 from dataclasses import replace
 import numpy as np
 import pytest
@@ -9,7 +9,7 @@ from holoanalyze.data import Frame, ImagePair
 from optical_bandlimit import NumpyAngularSpectrumBandlimit
 
 
-def test_native_rectangular_scan_only_keeps_curve_then_pads_display(monkeypatch):
+def test_padded_scan_only_keeps_curve_then_native_display(monkeypatch):
     config = replace(Config(), padding_size=128)
     image = np.random.default_rng(14).uniform(5, 150, (63, 97)).astype(np.float32)
     pair = ImagePair((Frame(image, config.serial0), None))
@@ -20,20 +20,26 @@ def test_native_rectangular_scan_only_keeps_curve_then_pads_display(monkeypatch)
     monkeypatch.setattr(engine.fft, 'fft2', observed)
     scan = [0., .1, .2]
     result = engine.analyze(pair, 'gabor_cam0', config, None, 1, scan, engine.Cancellation(), lambda *a: None)
-    assert calls == [image.shape]
-    assert result.reconstruction.spectrum is None and not hasattr(result.reconstruction, 'cache')
-    # Independent exact transfer on the unpadded rectangular DFT grid.
-    fy = fft.fftfreq(63, d=2.74)[:, None]
-    fx = fft.fftfreq(97, d=2.74)[None, :]
+    assert calls == [(128, 128)] and result.scan_padding_size == 128
+    assert result.reconstruction.spectrum is None
+    assert not result.reconstruction.cache.memory and not result.reconstruction.cache.files
+    # Independent exact transfer, mean of amplitude, and original-region crop.
+    fy = fft.fftfreq(128, d=2.74)[:, None]
+    fx = fft.fftfreq(128, d=2.74)[None, :]
     k = 1/.515
     phase = -2*np.pi*1000*(fx*fx+fy*fy)/(np.sqrt(k*k-fx*fx-fy*fy)+k)
-    spectrum = original_fft(np.sqrt(image))
+    field = np.sqrt(image)
+    padded = np.full((128, 128), field.mean(), np.float32)
+    crop = (slice(32, 95), slice(15, 112))
+    padded[crop] = field
+    spectrum = original_fft(padded)
     for row in result.curve:
-        expected = abs(fft.ifft2(spectrum*np.exp(1j*phase*row[0])))**2
+        expected = abs(fft.ifft2(spectrum*np.exp(1j*phase*row[0]))[crop])**2
         assert row[2] == pytest.approx(engine.tamura(expected), rel=2e-6)
-    render = result.reconstruction.render(.1, engine.Cancellation())
-    assert calls == [image.shape, (128, 128)] and render.filtered.shape == image.shape
-    assert result.reconstruction.render(.1, engine.Cancellation()) is not render
+    render = result.reconstruction.render(.1, engine.Cancellation(), 0)
+    assert calls == [(128, 128), image.shape] and render.filtered.shape == image.shape
+    assert render.padding_size == 0
+    assert result.reconstruction.render(.1, engine.Cancellation(), 0) is render
 
 
 def test_rectangular_bandlimit_uses_both_physical_extents():

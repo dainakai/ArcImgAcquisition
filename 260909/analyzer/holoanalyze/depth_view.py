@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
     QComboBox, QSlider)
 from .widgets import ImagePanel, FocusPlot, number, tip
+from .cache import padding_label
 
 
 class DepthViewer(QWidget):
@@ -33,7 +34,7 @@ class DepthViewer(QWidget):
         self.depth = number(0)
         self.depth.setMinimumWidth(128)
         self.depth.valueChanged.connect(self.select_depth)
-        tip(self.depth, "深度を入力してEnter、または上下ボタンで変更すると直ちに平均値パディングで再生します（既定4096）。探索画像のキャッシュは使用しません。")
+        tip(self.depth, "深度を入力してEnter、または上下ボタンで変更すると、選択中の表示パディングで再生します。表示済みの同じ条件は再利用します。")
         row.addWidget(self.depth)
         row.addStretch()
         details.addLayout(row)
@@ -41,8 +42,9 @@ class DepthViewer(QWidget):
         row.setSpacing(12)
         row.addWidget(QLabel("上下の刻み"))
         self.depth_step = QComboBox()
-        for step in (.1, .2, 1., 2.):
+        for step in (.02, .05, .1, .2, 1., 2.):
             self.depth_step.addItem(f"{step:g} mm", step)
+        self.depth_step.setCurrentIndex(self.depth_step.findData(.1))
         self.depth_step.setMinimumWidth(95)
         tip(self.depth_step, "深度の上下ボタン・上下キーの移動量を選びます。押すたびに再生計算を開始し、連続操作では最後の指定を優先します。")
         self.depth_step.currentIndexChanged.connect(lambda: self.depth.setSingleStep(self.depth_step.currentData()))
@@ -58,9 +60,19 @@ class DepthViewer(QWidget):
         details.addLayout(row)
         if layout_mode == "external":
             details.addWidget(self.filtered)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("表示パディング"))
+        self.padding = QComboBox()
+        for text, size in (("なし", 0), ("4k · 4096", 4096), ("8k · 8192", 8192)):
+            self.padding.addItem(text, size)
+        self.padding.setCurrentIndex(1)
+        tip(self.padding, "表示・保存する再生像の計算サイズです。変更すると同じ深度を再生します。4k／8kは場の平均値で埋め、表示は元の画像領域だけです。Tamura探索とGSの条件は変更しません。8kもCPUで計算し、途中停止できます。")
+        self.padding.currentIndexChanged.connect(lambda: self.select_depth(self.depth.value()))
+        row.addWidget(self.padding, 1)
+        details.addLayout(row)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
-        tip(self.slider, "探索範囲の深度を選び、その位置を平均値パディングで再生します（既定4096）。連続操作では最後の深度を優先します。")
+        tip(self.slider, "探索範囲の深度を選び、その位置を選択中の表示パディングで再生します。連続操作では最後の深度・パディングを優先します。")
         self.slider.valueChanged.connect(self.slider_changed)
         details.addWidget(self.slider)
         self.plot = FocusPlot()
@@ -119,6 +131,28 @@ class DepthViewer(QWidget):
         self.filtered.setEnabled(ready)
         self.peaks.setEnabled(ready and self.peaks.count() > 0)
 
+    @property
+    def padding_size(self):
+        return self.padding.currentData()
+
+    @property
+    def pending_key(self):
+        return (self.pending_depth, self.padding_size) if self.pending_depth is not None else None
+
+    def set_padding(self, size):
+        self.padding.blockSignals(True)
+        self.padding.setCurrentIndex(self.padding.findData(size))
+        self.padding.blockSignals(False)
+
+    def restore_rendered_selection(self):
+        self.pending_depth = None
+        if self.rendered is not None:
+            self.depth.blockSignals(True)
+            self.depth.setValue(self.rendered.z_mm)
+            self.depth.blockSignals(False)
+            self.set_padding(self.rendered.padding_size)
+            self.show_render(self.rendered)
+
     def update_peaks(self):
         if self.analysis is None:
             return
@@ -135,7 +169,7 @@ class DepthViewer(QWidget):
         else:
             suffix = "（中断した範囲の結果）" if self.analysis.stopped else ""
             self.status.setText(f"{len(self.analysis.curve)} 深度のTamura曲線 · {len(candidates)} ピーク {suffix}")
-        tip(self.status, "Tamuraは元画像サイズ・パディングなしの推定です。表示像は平均値パディングで再計算するため、境界条件が異なります。画像で焦点を微調整してください。")
+        tip(self.status, f"Tamuraは {self.analysis.scan_padding_size} × {self.analysis.scan_padding_size} の平均値パディングで計算した曲線です。表示パディングを変更しても曲線は変わりません。境界条件の異なる表示像では焦点を確認・微調整してください。")
         self.peaks.setEnabled(bool(candidates))
         self.plot.update()
 
@@ -160,16 +194,17 @@ class DepthViewer(QWidget):
             self.slider.blockSignals(True)
             self.slider.setValue(index)
             self.slider.blockSignals(False)
-        if self.rendered is not None and self.rendered.z_mm == z and self.pending_depth is None:
+        if (self.rendered is not None and (self.rendered.z_mm, self.rendered.padding_size) == (z, self.padding_size)
+                and self.pending_depth is None):
             return
         self.pending_depth = z
-        self.panel.title.setText(f"{self.base_title} · z = {z:.4f} mm を再生中")
+        self.panel.title.setText(f"{self.base_title} · z = {z:.4f} mm · {padding_label(self.padding_size)} を再生中")
         self.depthRequested.emit(z)
 
     def show_render(self, render):
         self.rendered = render
         self.panel.view.set_pixels(render.pixels(self.filtered.isChecked(), self.normalize))
-        self.panel.title.setText(f"{self.base_title} · z = {render.z_mm:.4f} mm")
+        self.panel.title.setText(f"{self.base_title} · z = {render.z_mm:.4f} mm · {padding_label(render.padding_size)}")
         self.panel.title.setToolTip(self.panel.title.text())
         self.plot.depth = render.z_mm
         self.plot.update()
@@ -181,7 +216,7 @@ class DepthViewer(QWidget):
             self.show_render(self.rendered)
 
     def accept_render(self, render):
-        if self.pending_depth == render.z_mm:
+        if self.pending_key == (render.z_mm, render.padding_size):
             self.pending_depth = None
             self.show_render(render)
 

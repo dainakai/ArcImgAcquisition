@@ -127,10 +127,12 @@ class Workspace(QWidget):
         changes = {f"cam{i}_scan_{edge}_mm": controls[i].value()
                    for edge, controls in (("min", self.minimum), ("max", self.maximum)) for i in (0, 1)}
         return replace(self.main.config, **changes, scan_step_mm=self.step.value(),
-                       gs_iterations=self.iterations.value()).validate()
+                       gs_iterations=self.iterations.value(),
+                       display_padding_size=self.main.acquisition.viewer.padding_size).validate()
 
     def bind_viewer(self, viewer):
         self.viewers.append(viewer)
+        viewer.set_padding(self.main.config.display_padding_size)
         viewer.depthRequested.connect(lambda z: self.request_depth(viewer))
         viewer.depthChanged.connect(lambda z: self.main.update_controls())
 
@@ -142,8 +144,9 @@ class Workspace(QWidget):
                 self.main.worker.cancel()
             return
         z = viewer.pending_depth
+        padding_size = viewer.padding_size
         reconstruction = viewer.analysis.reconstruction
-        self.main.submit(self, "深度再生", lambda c, p: reconstruction.render(z, c), viewer.accept_render)
+        self.main.submit(self, "深度再生", lambda c, p: reconstruction.render(z, c, padding_size), viewer.accept_render)
 
     def process_pending(self):
         for viewer in self.viewers:
@@ -196,7 +199,7 @@ def scan_controls(config, layout):
             tip(widget, f"cam{camera} 面からの符号付き伝搬距離です。カメラごとに範囲を指定します。位相回復後の探索はcam0の範囲を使います。")
             form.addRow(f"cam{camera} {label}", widget)
     step = number(config.scan_step_mm, .0001, 100000)
-    tip(step, "Tamura探索の共通間隔です。各カメラの最小から最大以下まで、元画像サイズで計算します。再生画像スタックは保持しません。")
+    tip(step, "Tamura探索の共通間隔です。各カメラの最小から最大以下まで、探索用の平均値パディング（既定4k）で計算します。探索画像スタックは保持しません。")
     form.addRow("探索間隔", step)
     iterations = QSpinBox()
     iterations.setRange(1, 10000)
@@ -234,6 +237,7 @@ class AcquisitionWorkspace(Workspace):
             self.control_tabs.addTab(page_scroll, label)
         self.control_tabs.setTabToolTip(0, "再生モードと探索範囲を指定してAnalyzeを実行します。")
         self.control_tabs.setTabToolTip(1, "深度を選んで再生し、表示画像をコピー・保存します。")
+        sidebar_controls = controls
         controls = setup_controls
         controls.addWidget(instruction("モードと範囲を指定して、<b>Analyze</b>で深度を探索します。"))
         self.mode = QComboBox()
@@ -245,7 +249,7 @@ class AcquisitionWorkspace(Workspace):
         controls.addWidget(self.mode)
         self.minimum, self.maximum, self.step, self.iterations = scan_controls(main.config, controls)
         self.analyze_button = button("Analyze · 深度探索", self.start_analysis,
-            "選択モードのTamura曲線をパディングなしで計算します。互換キャリブレーションがあるcam0 Gabor／位相回復ではGSを一度実行し、表示比較用に両方を準備します。画像スタックは保持せず、途中停止できます。")
+            "選択モードのTamura曲線を平均値パディング（既定4k）で計算します。互換キャリブレーションがあるcam0 Gabor／位相回復ではGSを一度実行し、表示比較用に両方を準備します。探索画像スタックは保持せず、途中停止できます。")
         controls.addWidget(self.analyze_button)
         self.calibration_label = instruction("キャリブレーション未適用")
         controls.addWidget(self.calibration_label)
@@ -277,8 +281,16 @@ class AcquisitionWorkspace(Workspace):
         depth_controls.addWidget(self.curve_mode_label)
         depth_controls.addWidget(self.viewer.details)
         depth_controls.addStretch()
-        depth_controls.addWidget(self.copy_button)
-        depth_controls.addWidget(self.save_button)
+        # Keep export actions visible while the depth controls scroll in a
+        # short window, including after adding the display-padding selector.
+        exports = QWidget()
+        export_controls = QVBoxLayout(exports)
+        export_controls.setContentsMargins(6, 0, 6, 0)
+        export_controls.addWidget(self.copy_button)
+        export_controls.addWidget(self.save_button)
+        sidebar_controls.addWidget(exports)
+        self.control_tabs.currentChanged.connect(lambda index: exports.setVisible(index == 1))
+        exports.setVisible(False)
         split.addWidget(scroll)
         inputs = QSplitter(Qt.Orientation.Vertical)
         for panel in self.camera_panels:
@@ -334,11 +346,12 @@ class AcquisitionWorkspace(Workspace):
                 self.main.worker.cancel()
             return
         z = viewer.pending_depth
+        padding_size = viewer.padding_size
         def done(renders):
-            if viewer.pending_depth == z:
+            if viewer.pending_key == (z, padding_size):
                 self.comparison_renders = renders
                 viewer.accept_render(renders[self.display_mode])
-        self.main.submit(self, "深度再生", lambda c, p: comparison.render(z, c), done)
+        self.main.submit(self, "深度再生", lambda c, p: comparison.render(z, c, padding_size), done)
 
     def set_pair(self, pair, note="画像を読み込みました。"):
         super().set_pair(pair, note)
@@ -392,7 +405,7 @@ class AcquisitionWorkspace(Workspace):
             self.analysis_metadata = dict(mode=mode, config=asdict(config), input_token=pair.token,
                 iterations=config.gs_iterations, comparison_prepared=compare,
                 calibration=calibration.metadata if compare or mode == "phase" else None)
-            self.curve_mode_label.setText(f"Tamura：{MODE_LABELS[mode]}")
+            self.curve_mode_label.setText(f"Tamura：{MODE_LABELS[mode]} · {config.padding_size}²")
             self.main.submit(self, "Analyze", lambda c, p: analyze(pair, mode, config, calibration,
                 config.gs_iterations, scan, c, p, compare=compare), self.analysis_done)
         except Exception as exc:
@@ -407,7 +420,7 @@ class AcquisitionWorkspace(Workspace):
         self.viewer.set_analysis(result)
         self.control_tabs.setCurrentIndex(1)
         self.main.notify(("途中までの結果を保持しました。" if result.stopped else "深度探索が完了しました。")+
-            " スライダー・曲線クリックで選んだ深度を平均値パディングで再生します。"+
+            " 深度を選び、表示パディングを「なし／4k／8k」で切り替えられます。"+
             (" 再生像上部でcam0 Gabor／位相回復を同じ位置で切り替えられます。" if result.comparison else "")+
             (" 山型ピークがないため、焦点は自動確定していません。" if not result.peaks_filtered else ""))
 
@@ -418,11 +431,11 @@ class AcquisitionWorkspace(Workspace):
 
     def save_image(self):
         viewer = self.viewer
-        if viewer.rendered is None or self.analysis_metadata is None:
+        if viewer.rendered is None or self.analysis_metadata is None or viewer.pending_depth is not None:
             return
         filtered = viewer.filtered.isChecked()
         rendered, pair = viewer.rendered, self.pair
-        default = self.main.session.default_result(pair, self.display_mode, rendered.z_mm, filtered)
+        default = self.main.session.default_result(pair, self.display_mode, rendered.z_mm, filtered, rendered.padding_size)
         try:
             self.main.session.ensure(self.main.config)
             default.parent.mkdir(parents=True, exist_ok=True)
@@ -439,8 +452,11 @@ class AcquisitionWorkspace(Workspace):
         curve = list(viewer.analysis.curve)
         metadata = dict(self.analysis_metadata, mode=self.display_mode, tamura_mode=self.analysis_metadata['mode'],
             z_mm=rendered.z_mm, filtered=filtered,
-            scan_stopped=viewer.analysis.stopped, padding="centered mean of input field",
-            gs_bandlimit=False, tamura_padding="none; native input dimensions", contrast_normalized=viewer.normalize,
+            scan_stopped=viewer.analysis.stopped, padding="none" if rendered.padding_size == 0 else "centered mean of input field",
+            display_padding_size=rendered.padding_size,
+            display_fft_shape=list(image.shape) if rendered.padding_size == 0 else [rendered.padding_size]*2,
+            gs_bandlimit=False, tamura_padding="centered mean of input field",
+            tamura_padding_size=viewer.analysis.scan_padding_size, contrast_normalized=viewer.normalize,
             sources=[f.path if f else None for f in pair.frames])
         session, config = self.main.session, self.main.config
         def operation(cancel, progress):
@@ -538,7 +554,8 @@ class CalibrationWorkspace(Workspace):
 
     def focus_selection(self):
         values = self.focus_depths()
-        return (values, tuple(v.filtered.isChecked() for v in self.viewers)) if values else None
+        return (values, tuple(v.filtered.isChecked() for v in self.viewers),
+                tuple(v.rendered.padding_size for v in self.viewers)) if values else None
 
     def update_gap(self):
         values = self.focus_depths()
@@ -627,6 +644,7 @@ class CalibrationWorkspace(Workspace):
                     self.main.notify("計算中に焦点位置が変わったため、ベクトルマップを再計算してください。")
                     return
                 result.calibration.metadata['focus_filtered'] = list(selection[1])
+                result.calibration.metadata['focus_display_padding_sizes'] = list(selection[2])
                 self.candidate_ready(result, selection)
             self.main.submit(self, "ベクトルマップ", lambda c, p: build_from_focused(pair, config, values, focused, c, p),
                 done)

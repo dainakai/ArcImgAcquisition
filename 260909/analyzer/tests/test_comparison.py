@@ -26,7 +26,7 @@ def comparison_input(config, shape=(80, 96)):
 
 @pytest.mark.parametrize('mode', ['gabor_cam0', 'phase'])
 def test_comparison_matches_independent_reconstructions_and_recovers_phase_once(mode, monkeypatch):
-    config = replace(Config(), padding_size=128, plane_separation_mm=1)
+    config = replace(Config(), padding_size=128, plane_separation_mm=1, display_cache_megabytes=0)
     pair, cal = comparison_input(config)
     recover = engine.phase_recover
     calls = []
@@ -62,6 +62,24 @@ def test_comparison_matches_independent_reconstructions_and_recovers_phase_once(
                 # A float32 scaling step can land on either side of n + 0.5;
                 # bit equality between independently rounded arrays is invalid.
                 np.testing.assert_allclose(r.pixels(filtered, normalized), expected, rtol=0, atol=.5001)
+    # Padding changes reuse the same recovered field and preserve comparison
+    # contrast, including when both variants have been evicted to disk.
+    native = comparison.render(5, cancel, 0)
+    for key, field in inputs.items():
+        reference = Reconstruction(field, config, cancel).render(5, cancel, 0)
+        np.testing.assert_allclose(native[key].unfiltered, reference.unfiltered, rtol=1e-5)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Revisiting display padding must not rerun FFT or GS')
+    with monkeypatch.context() as context:
+        context.setattr(engine, 'phase_recover', forbidden)
+        context.setattr(engine.fft, 'fft2', forbidden)
+        context.setattr(engine.fft, 'ifft2', forbidden)
+        for pad, expected in ((128, rendered), (0, native)):
+            restored = comparison.render(5, cancel, pad)
+            for key in inputs:
+                assert restored[key].padding_size == pad
+                np.testing.assert_array_equal(restored[key].previews, expected[key].previews)
+                assert restored[key].linear_limits == expected[key].linear_limits
     curve = list(result.curve)
     comparison.render(2, cancel)
     assert calls == [1] and result.curve == curve
@@ -74,6 +92,7 @@ def test_comparison_matches_independent_reconstructions_and_recovers_phase_once(
     monkeypatch.setattr(comparison.reconstructions['gabor_cam0'].propagator, 'from_spectrum', interrupt)
     with pytest.raises(Cancelled):
         comparison.render(3, cancel)
+    assert (3., 128) not in comparison.cache.files
 
 
 def test_comparison_requires_calibration_and_keeps_uncalibrated_gabor_available():
@@ -90,7 +109,7 @@ def test_comparison_requires_calibration_and_keeps_uncalibrated_gabor_available(
 
 @pytest.mark.parametrize('mode', ['gabor_cam0', 'phase'])
 def test_toggle_preserves_zoom_pan_depth_and_curve_and_saves_displayed_mode(app, tmp_path, monkeypatch, mode):
-    config = replace(Config(), output_dir=str(tmp_path), padding_size=512,
+    config = replace(Config(), output_dir=str(tmp_path), padding_size=512, display_padding_size=0,
                      cam0_scan_min_mm=1, cam0_scan_max_mm=3, scan_step_mm=1, gs_iterations=2)
     pair, cal = comparison_input(config, (192, 256))
     w = MainWindow(config, tmp_path/'config.yaml')

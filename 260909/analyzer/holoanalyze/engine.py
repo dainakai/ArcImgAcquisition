@@ -1,12 +1,12 @@
-"""CPU optics: native-size Tamura scans and mean-padded display reconstruction."""
-from dataclasses import dataclass, field
+"""CPU optics: mean-padded focus/GS and independently padded display fields."""
+from dataclasses import dataclass, field, replace
 import math
 import threading
 import numpy as np
 from scipy import fft, signal
 from optical_padding import mean_pad
 from optical_bandlimit import NumpyAngularSpectrumBandlimit
-from .cache import Render
+from .cache import Render, RenderCache
 
 
 class Cancelled(Exception):
@@ -119,24 +119,46 @@ class Propagator:
 class Reconstruction:
     def __init__(self, field, config, cancel):
         cancel.check()
+        self.config = config
+        self.padding_size = config.padding_size
         self.propagator = Propagator(config)
         self.field = field
         self.spectrum = self.crop = None
+        self.cache = RenderCache(config.display_cache_megabytes)
 
-    def prepare(self, cancel):
+    def select_padding(self, padding_size, propagator=None):
+        if isinstance(padding_size, bool) or not isinstance(padding_size, int) or (padding_size != 0 and not 16 <= padding_size <= 8192):
+            raise ValueError("表示パディングは0（なし）、または16〜8192の整数で指定してください")
+        if padding_size and max(self.field.shape) > padding_size:
+            raise ValueError(f"入力画像が {padding_size} × {padding_size} を超えています。縮小は行いません。")
+        if padding_size != self.padding_size or (propagator is not None and propagator is not self.propagator):
+            # Release the previous FFT/grid before allocating an 8k workspace.
+            self.spectrum = self.crop = None
+            self.propagator = propagator or Propagator(
+                replace(self.config, padding_size=padding_size) if padding_size else self.config,
+                native_shape=self.field.shape if padding_size == 0 else None)
+            self.padding_size = padding_size
+
+    def prepare(self, cancel, padding_size=None):
+        cancel.check()
+        self.select_padding(self.config.padding_size if padding_size is None else padding_size)
         if self.spectrum is None:
             self.spectrum, self.crop = self.propagator.spectrum(self.field, cancel)
 
-    def render(self, z_mm, cancel):
-        key = float(z_mm)
+    def render(self, z_mm, cancel, padding_size=None):
+        z = float(z_mm)
+        padding_size = self.config.padding_size if padding_size is None else padding_size
+        key = (z, padding_size)
         cancel.check()
+        cached = self.cache.get(key, cancel)
+        if cached is not None:
+            return cached['image']
+        self.prepare(cancel, padding_size)
         prop = self.propagator
-        # Prepare the display FFT lazily, after the inexpensive native scan.
-        # Retain the input spectrum, never a stack of reconstructed images.
-        self.prepare(cancel)
-        filtered, unfiltered = render_intensities(prop, self.spectrum, self.crop, key, cancel)
-        result = Render(key, filtered, unfiltered).prepare_preview()
+        filtered, unfiltered = render_intensities(prop, self.spectrum, self.crop, z, cancel)
+        result = Render(z, filtered, unfiltered, padding_size=padding_size).prepare_preview()
         cancel.check()
+        self.cache.put(key, {'image': result}, cancel)
         return result
 
 
@@ -146,13 +168,22 @@ class ComparisonReconstruction:
         if gabor.field.shape != phase.field.shape:
             raise ValueError("Comparison requires the same cam0 image region")
         self.reconstructions = {"gabor_cam0": gabor, "phase": phase}
+        self.cache = RenderCache(gabor.config.display_cache_megabytes)
         # Identical optics: share the phase grid and evaluate each transfer once.
         phase.propagator = gabor.propagator
 
-    def render(self, z_mm, cancel):
+    def render(self, z_mm, cancel, padding_size=None):
         cancel.check()
+        gabor = self.reconstructions['gabor_cam0']
+        padding_size = gabor.config.padding_size if padding_size is None else padding_size
+        key = (float(z_mm), padding_size)
+        cached = self.cache.get(key, cancel)
+        if cached is not None:
+            return cached
+        gabor.select_padding(padding_size)
+        self.reconstructions['phase'].select_padding(padding_size, gabor.propagator)
         for reconstruction in self.reconstructions.values():
-            reconstruction.prepare(cancel)
+            reconstruction.prepare(cancel, padding_size)
         prop = self.reconstructions["gabor_cam0"].propagator
         transfer = prop.transfer(z_mm, cancel, filtered=False)
         unfiltered = {}
@@ -172,13 +203,15 @@ class ComparisonReconstruction:
                 filtered[mode] = (np.abs(u)**2).astype(np.float32)
                 del u
         # Common display scaling makes a toggle compare the fields, including
-        # when contrast normalization is disabled with N. No depth stack is kept.
+        # when contrast normalization is disabled with N.
         percentiles = [np.percentile(a, [1, 99]) for a in filtered.values()]
         limits = (min(p[0] for p in percentiles), max(p[1] for p in percentiles))
         linear = (0, max(float(a.max()) for a in (*filtered.values(), *unfiltered.values())))
-        results = {mode: Render(float(z_mm), filtered[mode], unfiltered[mode], linear_limits=linear).prepare_preview(limits)
+        results = {mode: Render(float(z_mm), filtered[mode], unfiltered[mode], linear_limits=linear,
+                               padding_size=padding_size).prepare_preview(limits)
                    for mode in self.reconstructions}
         cancel.check()
+        self.cache.put(key, results, cancel)
         return results
 
 
@@ -241,6 +274,7 @@ class Analysis:
     peaks_filtered: list = field(default_factory=list)
     peaks_unfiltered: list = field(default_factory=list)
     comparison: ComparisonReconstruction | None = None
+    scan_padding_size: int = 4096
 
 
 def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress, compare=False):
@@ -256,7 +290,7 @@ def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress,
         if pair.frames[index] is None:
             raise ValueError(f"cam{index} の画像を読み込んでください")
         field = np.sqrt(intensity_input(pair.frames[index].image, config.padding_size))
-    result = Analysis(Reconstruction(field, config, cancel))
+    result = Analysis(Reconstruction(field, config, cancel), scan_padding_size=config.padding_size)
     if compare:
         if mode == "phase":
             gabor = Reconstruction(np.sqrt(intensity_input(pair.frames[0].image, config.padding_size)), config, cancel)
@@ -264,15 +298,15 @@ def analyze(pair, mode, config, calibration, iterations, scan, cancel, progress,
         else:
             phase = Reconstruction(phase_recover(pair, calibration, config, iterations, cancel, progress), config, cancel)
             result.comparison = ComparisonReconstruction(result.reconstruction, phase)
-    progress(f"Tamura用 {field.shape[1]} × {field.shape[0]} スペクトルを準備（パディングなし）", 0, 0, None)
-    prop = Propagator(config, native_shape=field.shape)
+    progress(f"Tamura用 {config.padding_size} × {config.padding_size} スペクトルを準備（平均値パディング）", 0, 0, None)
+    prop = Propagator(config)
     spectrum, crop = prop.spectrum(field, cancel)
     try:
         for i, z in enumerate(scan):
             filtered, unfiltered = render_intensities(prop, spectrum, crop, float(z), cancel)
             result.curve.append((float(z), tamura(filtered), tamura(unfiltered)))
             del filtered, unfiltered
-            progress("Tamura 深度探索（パディングなし）", i+1, len(scan), result.curve[-1])
+            progress(f"Tamura 深度探索（{config.padding_size}² 平均値パディング）", i+1, len(scan), result.curve[-1])
     except Cancelled:
         if not result.curve:
             raise

@@ -1,8 +1,12 @@
 # DualHolo Analyze — camera settings are never written.
 wavelength_nm: 515.0
 pixel_pitch_um: 2.74
-# Display and GS only. Tamura always uses the native image dimensions.
+# Mean-padded Tamura focus search and GS. Display padding is independent.
 padding_size: 4096
+# Display/export: 0 = native image dimensions, 4096 = 4k, 8192 = 8k.
+display_padding_size: 4096
+# Cropped, visited display depths only. Excess images spill to temporary files.
+display_cache_megabytes: 256
 compute_threads: 4
 peak_prominence_fraction: 0.005
 peak_min_width_samples: 1.0

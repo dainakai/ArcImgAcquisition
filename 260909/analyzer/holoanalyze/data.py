@@ -182,9 +182,9 @@ class Session:
             save_config(config, self.path / "config.yaml")
         return self.path
 
-    def default_result(self, pair, mode, z, filtered):
+    def default_result(self, pair, mode, z, filtered, padding_size=4096):
         return self.path / ("recording_" + pair.captured_at) / "reconstructions" / (
-            f"{mode}_z{z:+.6f}mm_{'filtered' if filtered else 'unfiltered'}.tiff")
+            f"{mode}_z{z:+.6f}mm_{'filtered' if filtered else 'unfiltered'}_pad{'none' if padding_size == 0 else padding_size}.tiff")
 
     def save_raw(self, pair, config):
         self.ensure(config)

@@ -104,12 +104,12 @@ class FakeReconstruction:
     def __init__(self):
         self.calls = []
 
-    def render(self, z, cancel):
+    def render(self, z, cancel, padding_size=4096):
         self.calls.append(z)
         for _ in range(10):
             cancel.check()
             time.sleep(.005)
-        result = Render(z, np.full((40, 50), z, np.float32), np.full((40, 50), z+1, np.float32)).prepare_preview()
+        result = Render(z, np.full((40, 50), z, np.float32), np.full((40, 50), z+1, np.float32), padding_size=padding_size).prepare_preview()
         return result
 
 
@@ -149,7 +149,7 @@ def test_latest_depth_wins_recompute_plot_toggle_clipboard_and_resume(app, tmp_p
     viewer.slider.setValue(0)
     wait(app, lambda: w.worker is None)
     assert viewer.rendered.z_mm == 40 and len(reconstruction.calls) == len(before)+2
-    viewer.depth_step.setCurrentIndex(0)
+    viewer.depth_step.setCurrentIndex(viewer.depth_step.findData(.1))
     option = QStyleOptionSpinBox()
     viewer.depth.initStyleOption(option)
     up = viewer.depth.style().subControlRect(QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxUp, viewer.depth)
@@ -236,7 +236,7 @@ def test_stopped_scan_does_not_start_display_work(app, tmp_path):
     close(app, w)
 
 
-def test_depth_step_row_is_separated_and_all_four_arrow_steps_render_immediately(app, tmp_path):
+def test_depth_step_row_is_separated_and_all_six_arrow_steps_render_immediately(app, tmp_path):
     w = MainWindow(Config(output_dir=str(tmp_path)), tmp_path/'config.yaml')
     w.resize(1280, 800)
     w.show()
@@ -248,12 +248,13 @@ def test_depth_step_row_is_separated_and_all_four_arrow_steps_render_immediately
     try:
         wait(app, lambda: w.worker is None)
         for v in (viewer, *w.calibration_tab.viewers):
-            assert [v.depth_step.itemData(i) for i in range(v.depth_step.count())] == [.1, .2, 1., 2.]
+            assert [v.depth_step.itemData(i) for i in range(v.depth_step.count())] == [.02, .05, .1, .2, 1., 2.]
         lower = viewer.depth.mapToGlobal(viewer.depth.rect().bottomLeft()).y()
         upper = viewer.depth_step.mapToGlobal(viewer.depth_step.rect().topLeft()).y()
         assert upper-lower >= 8, 'The step selector must be below, separated from the depth arrows'
+        assert a.save_button.visibleRegion().boundingRect() == a.save_button.rect(), 'Save must remain visible without scrolling the depth controls'
         value = 40
-        for step in (.1, .2, 1., 2.):
+        for step in (.02, .05, .1, .2, 1., 2.):
             viewer.depth_step.setCurrentIndex(viewer.depth_step.findData(step))
             option = QStyleOptionSpinBox()
             viewer.depth.initStyleOption(option)

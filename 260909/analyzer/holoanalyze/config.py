@@ -11,6 +11,8 @@ class Config:
     wavelength_nm: float = 515.0
     pixel_pitch_um: float = 2.74
     padding_size: int = 4096
+    display_padding_size: int = 4096  # 0: native dimensions; independent of focus/GS
+    display_cache_megabytes: int = 256
     compute_threads: int = 4
     peak_prominence_fraction: float = 0.005
     peak_min_width_samples: float = 1.0
@@ -72,8 +74,12 @@ class Config:
                 raise ValueError(f"cam{camera}: min ≤ max、10001深度以内にしてください")
         if not 0 <= self.peak_prominence_fraction <= 1 or self.peak_min_width_samples < 1:
             raise ValueError("Invalid interior-peak prominence or width")
+        if (isinstance(self.display_padding_size, bool) or not isinstance(self.display_padding_size, int)
+                or self.display_padding_size not in (0, 4096, 8192)):
+            raise ValueError("display_padding_size must be 0 (none), 4096 or 8192")
         for name, lo, hi in (("gs_iterations", 1, 10000),
                              ("padding_size", 16, 8192), ("compute_threads", 1, 4),
+                             ("display_cache_megabytes", 0, 2048),
                              ("slider_debounce_ms", 0, 2000), ("calibration_window_px", 16, 512),
                              ("calibration_step_px", 8, 512), ("calibration_search_px", 2, 512),
                              ("calibration_min_matches", 12, 10000)):
@@ -95,7 +101,7 @@ def load_config(path: Path) -> Config:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError("Config must be a YAML mapping")
-    # Older YAML files remain readable; depth-image caching is retired.
+    # Retired scan-stack cache settings do not control the visited-display cache.
     data.pop("cache_megabytes", None)
     data.pop("cache_directory", None)
     unknown = set(data) - {f.name for f in fields(Config)}

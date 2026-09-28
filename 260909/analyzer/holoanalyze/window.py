@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
         self.settings_button.setEnabled(not busy)
         self.session_button.setEnabled(not busy and self.camera is None)
         c = self.config
-        self.optics_label.setText(f"{c.wavelength_nm:g} nm · {c.pixel_pitch_um:g} µm · 表示/GS {c.padding_size}² 平均値 · Tamura 原寸 · CPU {c.compute_threads}")
+        self.optics_label.setText(f"{c.wavelength_nm:g} nm · {c.pixel_pitch_um:g} µm · 探索/GS {c.padding_size}² 平均値 · 表示：なし/4k/8k · CPU {c.compute_threads}")
         tip(self.optics_label, "GS往復は帯域制限なし。各深度の再生は、あり／なし両方を保持します。設定ボタンから各条件を変更できます。")
 
     def submit(self, owner, kind, operation, callback):
@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
                 self.progress_label.setText("処理できませんでした")
                 if owner:
                     for viewer in owner.viewers:
-                        viewer.pending_depth = None
+                        viewer.restore_rendered_selection()
         def cancelled():
             if valid():
                 self.progress_label.setText("中断しました")
@@ -223,12 +223,7 @@ class MainWindow(QMainWindow):
     def stop(self):
         for workspace in self.workspaces:
             for viewer in workspace.viewers:
-                viewer.pending_depth = None
-                if viewer.rendered is not None:
-                    viewer.depth.blockSignals(True)
-                    viewer.depth.setValue(viewer.rendered.z_mm)
-                    viewer.depth.blockSignals(False)
-                    viewer.show_render(viewer.rendered)
+                viewer.restore_rendered_selection()
         if self.worker:
             self.worker.cancel()
             self.progress_label.setText("現在のFFT / 相関ブロックの完了後に中断…")
@@ -305,6 +300,8 @@ class MainWindow(QMainWindow):
         if changed_output:
             self.new_session()
         for workspace in self.workspaces:
+            for viewer in workspace.viewers:
+                viewer.set_padding(config.display_padding_size)
             for camera in (0, 1):
                 lo, hi = config.scan_bounds(camera)
                 workspace.minimum[camera].setValue(lo)

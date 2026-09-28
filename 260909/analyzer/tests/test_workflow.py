@@ -23,7 +23,7 @@ def glass_pair(config):
 
 
 def test_complete_calibration_and_phase_workflow(app, tmp_path):
-    config = replace(Config(), output_dir=str(tmp_path), padding_size=512, scan_min_mm=1, scan_max_mm=4,
+    config = replace(Config(), output_dir=str(tmp_path), padding_size=512, display_padding_size=0, scan_min_mm=1, scan_max_mm=4,
         scan_step_mm=.1, gs_iterations=3, calibration_window_px=48, calibration_step_px=48, calibration_search_px=8,
         cam0_scan_min_mm=2, cam0_scan_max_mm=4, cam1_scan_min_mm=1, cam1_scan_max_mm=3)
     pair = glass_pair(config)
@@ -41,13 +41,14 @@ def test_complete_calibration_and_phase_workflow(app, tmp_path):
         assert len(viewer.analysis.curve) == 21
         assert viewer.analysis.curve[0][0] == (2 if i == 0 else 1)
         assert viewer.analysis.curve[-1][0] == (4 if i == 0 else 3)
-        assert not hasattr(viewer.analysis.reconstruction, "cache")
+        assert len(viewer.analysis.reconstruction.cache.memory) == 1
     assert c.map_button.isEnabled()
     c.build_map()
     wait(app, lambda: w.worker is None, timeout=60)
     assert c.candidate is not None, w.message.text()
     metadata = c.candidate.metadata
     assert metadata['plane_separation_mm'] == pytest.approx(1, abs=.1)
+    assert metadata['focus_display_padding_sizes'] == [0, 0]
     # Gabor reconstructions from two intensity-only planes contain different
     # twin images; their local-match residual is not the known map error.
     assert metadata['post_rms_px'] < .8

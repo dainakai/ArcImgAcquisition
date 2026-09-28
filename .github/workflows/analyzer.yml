@@ -63,7 +63,7 @@ jobs:
           cmake "${args[@]}"
       - name: Build bridge
         run: cmake --build 260909/build-analyzer --config Release --target holo_capture --parallel 3
-      - name: Unit, GUI and full 4096 CPU numerical tests
+      - name: Unit, GUI and full 4096/8192 CPU numerical tests
         shell: bash
         run: |
           export HOLO_CAPTURE_LIBRARY="$(find 260909/build-analyzer/analyzer -name '${{ matrix.library }}' -type f | head -1)"

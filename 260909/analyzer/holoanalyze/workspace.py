@@ -10,6 +10,8 @@ from .calibration import Calibration, CalibrationPreview, build_from_focused, se
 from .data import Frame, ImagePair, load_pair, read_image, fingerprint, save_result
 from .engine import analyze, depths, Cancelled
 from .depth_view import DepthViewer
+from .minip import create_minip
+from .minip_view import MinIPViewer
 from .widgets import ImagePanel, VectorPlot, button, number, tip, qimage
 
 MODE_LABELS = {"gabor_cam0": "cam0 Gabor", "gabor_cam1": "cam1 Gabor", "phase": "位相回復"}
@@ -257,7 +259,7 @@ class AcquisitionWorkspace(Workspace):
             "ガラスプレートの焦点・面間距離・画像変換を求めるタブへ移動します。このタブの入力画像と解析結果は保持します。"))
         controls.addStretch()
         self.copy_button = button("表示画像をコピー", self.copy_image, "現在の再生画像を、表示中のコントラストでクリップボードへコピーします。")
-        self.save_button = button("再生画像を保存…", self.save_image, "現在の深度の再生画像を保存します。TIFFはfloat32強度、PNGは表示コントラストです。再生条件JSONとTamura曲線CSVも保存します。")
+        self.save_button = button("再生画像を保存…", self.save_image, "現在の再生画像を表示中の明暗で8 bitグレースケールBMPまたはPNGへ保存します。BMPは無圧縮、PNGも圧縮レベル0で保存時間を抑えます。再生条件JSONとTamura曲線CSVも保存します。")
         self.viewer = DepthViewer("再生画像", layout_mode="external")
         comparison_bar = QWidget()
         comparison_layout = QHBoxLayout(comparison_bar)
@@ -291,6 +293,25 @@ class AcquisitionWorkspace(Workspace):
         sidebar_controls.addWidget(exports)
         self.control_tabs.currentChanged.connect(lambda index: exports.setVisible(index == 1))
         exports.setVisible(False)
+        self.minip = MinIPViewer(main.config)
+        minip_scroll = QScrollArea()
+        minip_scroll.setWidgetResizable(True)
+        minip_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        minip_scroll.setWidget(self.minip.controls)
+        self.control_tabs.addTab(minip_scroll, "MinIP")
+        self.control_tabs.setTabToolTip(2, "奥行き範囲と再構成間隔を指定し、GaborまたはPRのMinIPを作成・保存します。")
+        self.minip.requested.connect(self.start_minip)
+        self.minip.mode.currentIndexChanged.connect(lambda: self.main.update_controls())
+        self.minip_copy_button = button("MinIPをコピー", self.copy_minip, "表示中のMinIPを8 bitグレースケールでコピーします。")
+        self.minip_save_button = button("MinIPを保存…", self.save_minip, "表示中のMinIPを8 bit BMPまたは高速PNGへ保存し、深度範囲・間隔と再構成条件をJSONに記録します。")
+        minip_exports = QWidget()
+        minip_export_controls = QVBoxLayout(minip_exports)
+        minip_export_controls.setContentsMargins(6, 0, 6, 0)
+        minip_export_controls.addWidget(self.minip_copy_button)
+        minip_export_controls.addWidget(self.minip_save_button)
+        sidebar_controls.addWidget(minip_exports)
+        self.control_tabs.currentChanged.connect(lambda index: minip_exports.setVisible(index == 2))
+        minip_exports.setVisible(False)
         split.addWidget(scroll)
         inputs = QSplitter(Qt.Orientation.Vertical)
         for panel in self.camera_panels:
@@ -298,10 +319,23 @@ class AcquisitionWorkspace(Workspace):
         inputs.setMinimumWidth(280)
         split.addWidget(inputs)
         self.bind_viewer(self.viewer)
-        split.addWidget(self.viewer)
+        self.result_tabs = QTabWidget()
+        self.result_tabs.addTab(self.viewer, "深度再生")
+        self.result_tabs.addTab(self.minip, "MinIP")
+        self.result_tabs.setTabToolTip(0, "Tamura曲線で選んだ深度の再生像を表示します。")
+        self.result_tabs.setTabToolTip(1, "指定範囲の最小強度投影を表示します。")
+        self.control_tabs.currentChanged.connect(lambda index: self.result_tabs.setCurrentIndex(1 if index == 2 else 0))
+        self.result_tabs.currentChanged.connect(self.result_tab_changed)
+        split.addWidget(self.result_tabs)
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 2)
         split.setSizes([285, 340, 800])
+
+    def result_tab_changed(self, index):
+        if index == 1:
+            self.control_tabs.setCurrentIndex(2)
+        elif self.control_tabs.currentIndex() == 2:
+            self.control_tabs.setCurrentIndex(1)
 
     def clear_results(self):
         super().clear_results()
@@ -311,6 +345,7 @@ class AcquisitionWorkspace(Workspace):
         self.viewer.base_title = MODE_LABELS[self.display_mode]
         self.viewer.panel.title.setText(self.viewer.base_title)
         self.curve_mode_label.setText("Tamura：Analyzeで選んだモード")
+        self.minip.clear()
 
     def mode_changed(self):
         self.clear_results()
@@ -357,6 +392,8 @@ class AcquisitionWorkspace(Workspace):
         super().set_pair(pair, note)
         if pair.frames[0] is None and self.mode.currentData() == "gabor_cam0":
             self.mode.setCurrentIndex(1)
+        if pair.frames[0] is None and self.minip.mode.currentData() == "gabor_cam0":
+            self.minip.mode.setCurrentIndex(1)
 
     def update_controls(self):
         super().update_controls()
@@ -380,6 +417,17 @@ class AcquisitionWorkspace(Workspace):
         can_export = self.viewer.rendered is not None and self.viewer.pending_depth is None
         self.copy_button.setEnabled(can_export)
         self.save_button.setEnabled(can_export and not busy)
+        minip_mode = self.minip.mode.currentData()
+        minip_ready = self.pair is not None and (not reason if minip_mode == "phase" else
+            self.pair.frames[1 if minip_mode == "gabor_cam1" else 0] is not None)
+        self.minip.mode.model().item(2).setEnabled(not reason)
+        self.minip.mode.setItemData(2, reason or "適用済み較正でGSを一度実行します", Qt.ItemDataRole.ToolTipRole)
+        self.minip.create_button.setEnabled(not busy and minip_ready)
+        for control in (self.minip.mode, self.minip.minimum, self.minip.maximum, self.minip.step, self.minip.padding):
+            control.setEnabled(not busy)
+        self.minip.iterations.setEnabled(not busy and minip_mode == "phase")
+        self.minip_copy_button.setEnabled(self.minip.result is not None)
+        self.minip_save_button.setEnabled(self.minip.result is not None and not busy)
         if self.main.calibration is None:
             text = "キャリブレーション未適用\n位相回復を使うには、ガラスプレートの焦点と画像変換を確認して適用してください。"
         else:
@@ -442,11 +490,11 @@ class AcquisitionWorkspace(Workspace):
         except Exception as exc:
             self.main.notify(str(exc))
             return
-        path, selected = QFileDialog.getSaveFileName(self, "再生画像を保存", str(default), "TIFF 強度 (*.tiff);;PNG 表示画像 (*.png)")
+        path, selected = QFileDialog.getSaveFileName(self, "再生画像を保存", str(default), "BMP 8 bit グレースケール (*.bmp);;PNG 8 bit グレースケール (*.png)")
         if not path:
             return
         if not Path(path).suffix:
-            path += ".png" if "PNG" in selected else ".tiff"
+            path += ".png" if "PNG" in selected else ".bmp"
         image = rendered.filtered if filtered else rendered.unfiltered
         pixels = viewer.panel.view.pixels.copy()
         curve = list(viewer.analysis.curve)
@@ -464,6 +512,76 @@ class AcquisitionWorkspace(Workspace):
             metadata['input_sha256'] = [fingerprint(f.image) if f else None for f in pair.frames]
             save_result(path, image, pixels, metadata, curve)
         self.main.submit(self, "再生画像を保存", operation, lambda r: self.main.notify(f"画像・条件・Tamura曲線を保存しました: {path}"))
+
+    def start_minip(self):
+        if self.main.worker is not None or self.pair is None:
+            return
+        try:
+            view = self.minip
+            mode, minimum, maximum, step = view.mode.currentData(), view.minimum.value(), view.maximum.value(), view.step.value()
+            scan = depths(minimum, maximum, step)
+            if mode == "phase" and self.main.phase_reason(self.pair):
+                raise ValueError(self.main.phase_reason(self.pair))
+            config = replace(self.main.config, gs_iterations=view.iterations.value())
+            pair, calibration, padding = self.pair, self.main.calibration, view.padding.currentData()
+            # Completed results remain visible until replaced; metadata is a
+            # snapshot, independent of later edits to the input controls.
+            metadata = dict(kind="minip", mode=mode, config=asdict(config), input_token=pair.token,
+                minimum_mm=minimum, maximum_mm=maximum, step_mm=step, depths_mm=scan.tolist(),
+                depth_count=len(scan), actual_maximum_mm=float(scan[-1]),
+                iterations=config.gs_iterations if mode == "phase" else 0,
+                calibration=calibration.metadata if mode == "phase" else None,
+                padding="none" if padding == 0 else "centered mean of input field",
+                display_padding_size=padding, gs_bandlimit=False,
+                sources=[f.path if f else None for f in pair.frames])
+            for viewer in self.viewers:
+                viewer.restore_rendered_selection()
+            def done(result):
+                view.accept_result(result, metadata)
+                self.control_tabs.setCurrentIndex(2)
+                self.main.notify(f"MinIPが完成しました：{len(result.depths_mm)} 深度。MinIPを保存からBMP / PNGへ保存できます。")
+            self.main.submit(self, "MinIP", lambda c, p: create_minip(pair, mode, config, calibration,
+                config.gs_iterations, minimum, maximum, step, padding, c, p), done)
+        except Exception as exc:
+            self.main.notify(str(exc))
+
+    def copy_minip(self):
+        if self.minip.result is not None:
+            QApplication.clipboard().setImage(qimage(self.minip.panel.view.pixels))
+            self.main.notify("MinIPをクリップボードへコピーしました。")
+
+    def save_minip(self):
+        view = self.minip
+        if view.result is None or self.pair is None:
+            return
+        result, pair, filtered = view.result, self.pair, view.filtered.isChecked()
+        metadata = dict(view.metadata, filtered=filtered, contrast_normalized=view.normalize,
+            contrast_limits=list(result.limits if view.normalize else result.linear_limits),
+            display_fft_shape=list(result.filtered.shape) if result.padding_size == 0 else [result.padding_size]*2)
+        default = self.main.session.default_minip(pair, metadata['mode'], result.depths_mm,
+            metadata['step_mm'], filtered, result.padding_size)
+        try:
+            self.main.session.ensure(self.main.config)
+            default.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self.main.notify(str(exc))
+            return
+        path, selected = QFileDialog.getSaveFileName(self, "MinIPを保存", str(default),
+            "BMP 8 bit グレースケール (*.bmp);;PNG 8 bit グレースケール (*.png)")
+        if not path:
+            return
+        if not Path(path).suffix:
+            path += ".png" if "PNG" in selected else ".bmp"
+        pixels = view.panel.view.pixels.copy()
+        image = result.filtered if filtered else result.unfiltered
+        def operation(cancel, progress):
+            metadata['input_sha256'] = [fingerprint(f.image) if f else None for f in pair.frames]
+            save_result(path, image, pixels, metadata)
+        self.main.submit(self, "MinIPを保存", operation, lambda r: self.main.notify(f"MinIP画像と再構成条件を保存しました: {path}"))
+
+    def toggle_contrast(self):
+        super().toggle_contrast()
+        self.minip.toggle_contrast()
 
 
 class CalibrationWorkspace(Workspace):
@@ -707,6 +825,7 @@ class CalibrationWorkspace(Workspace):
             calibration.metadata['gs_iterations'] = self.iterations.value()
             self.main.config, self.main.calibration = config, calibration
             self.main.acquisition.iterations.setValue(config.gs_iterations)
+            self.main.acquisition.minip.iterations.setValue(config.gs_iterations)
             self.quality_label.setText(self.quality_label.text().replace("適用前", "適用済み"))
             self.main.notify(f"画像変換と面間距離 Δz = {gap:+.4f} mm を適用しました。撮影・解析タブで位相回復を選べます。")
             self.main.update_controls()

@@ -35,9 +35,9 @@ class Config:
     calibration_file: str | None = None
     camera_library: str | None = None
     slider_debounce_ms: int = 160
-    calibration_window_px: int = 128
+    calibration_window_px: int = 256
     calibration_step_px: int = 256
-    calibration_search_px: int = 12
+    calibration_search_px: int = 32
     calibration_min_matches: int = 15
     calibration_max_rms_px: float = 1.0
     calibration_max_holdout_px: float = 1.5

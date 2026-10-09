@@ -125,7 +125,7 @@ def find_partner(selected: Path, tolerance_ms=8.0, max_uncertainty_ms=3.0):
     # Old DualHolo: event_.../frame_000019/cam0_serial.tiff + cam1_serial.tiff.
     if re.match(r"cam[01]_", selected.name):
         partners = sorted(p for p in selected.parent.glob(f"cam{1-camera}_*")
-                          if p.suffix.lower() in (".tif", ".tiff", ".png"))
+                          if p.suffix.lower() in (".tif", ".tiff", ".png", ".bmp"))
         if len(partners) == 1:
             paths[1-camera] = partners[0]
             return tuple(paths), "同じペアフォルダのcam0・cam1画像を読み込みました。"
@@ -184,7 +184,12 @@ class Session:
 
     def default_result(self, pair, mode, z, filtered, padding_size=4096):
         return self.path / ("recording_" + pair.captured_at) / "reconstructions" / (
-            f"{mode}_z{z:+.6f}mm_{'filtered' if filtered else 'unfiltered'}_pad{'none' if padding_size == 0 else padding_size}.tiff")
+            f"{mode}_z{z:+.6f}mm_{'filtered' if filtered else 'unfiltered'}_pad{'none' if padding_size == 0 else padding_size}.bmp")
+
+    def default_minip(self, pair, mode, scan, step, filtered, padding_size):
+        return self.path / ("recording_" + pair.captured_at) / "minip" / (
+            f"{mode}_minip_z{scan[0]:+.6f}_{scan[-1]:+.6f}mm_step{step:.6f}mm_"
+            f"{'filtered' if filtered else 'unfiltered'}_pad{'none' if padding_size == 0 else padding_size}.bmp")
 
     def save_raw(self, pair, config):
         self.ensure(config)
@@ -194,10 +199,16 @@ class Session:
         for i, frame in enumerate(pair.frames):
             if frame is None:
                 continue
-            name = f"cam{i}_{frame.serial}/frame_000000_id{frame.frame_id}.tiff"
+            # Mono8 stays exactly 8 bit. Preserve higher precision raw inputs
+            # losslessly instead of silently quantizing the source hologram.
+            suffix = ".bmp" if frame.image.dtype == np.uint8 else ".tiff"
+            name = f"cam{i}_{frame.serial}/frame_000000_id{frame.frame_id}{suffix}"
             path = target / name
             path.parent.mkdir()
-            tifffile.imwrite(path, frame.image, compression=None, photometric="minisblack")
+            if suffix == ".bmp":
+                save_gray8(path, frame.image)
+            else:
+                tifffile.imwrite(path, frame.image, compression=None, photometric="minisblack")
             rows.append(dict(file=name, camera=i, index=0, serial=frame.serial, frame_id=frame.frame_id,
                              camera_ns=frame.camera_ns, host_received_ns=frame.host_ns,
                              estimated_exposure_host_ns=frame.exposure_ns, clock_uncertainty_ms=frame.uncertainty_ms,
@@ -212,27 +223,50 @@ class Session:
         return target
 
 
-def save_result(path, intensity, preview, metadata, curve):
-    """Float TIFF preserves intensity; PNG copies the explicitly scaled display."""
+def save_gray8(path, pixels):
+    """Explicit 8-bit grayscale via OpenCV, independent of Spinnaker encoders."""
+    import cv2
     path = Path(path)
+    if pixels.dtype != np.uint8 or pixels.ndim != 2 or not pixels.size:
+        raise ValueError("保存画像は8 bitグレースケールで指定してください")
+    suffix = path.suffix.lower()
+    if suffix not in (".bmp", ".png"):
+        raise ValueError("8 bit BMP または PNG を選んでください")
+    parameters = ([cv2.IMWRITE_PNG_COMPRESSION, 0]
+                  if suffix == ".png" else [])
+    ok, encoded = cv2.imencode(suffix, np.ascontiguousarray(pixels), parameters)
+    if not ok:
+        raise OSError(f"{suffix} encoding failed")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.stem + ".partial" + path.suffix)
     try:
-        if path.suffix.lower() in (".tif", ".tiff"):
-            tifffile.imwrite(temporary, intensity.astype(np.float32), photometric="minisblack", compression=None)
-        elif path.suffix.lower() == ".png":
-            import cv2
-            ok, data = cv2.imencode(".png", preview)
-            if not ok:
-                raise OSError("PNG encoding failed")
-            data.tofile(temporary)
-        else:
-            raise ValueError("Choose TIFF (float32 intensity) or PNG (display contrast)")
+        encoded.tofile(temporary)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def save_result(path, intensity, preview, metadata, curve=None):
+    """Export displayed grayscale pixels; float TIFF remains a legacy API option."""
+    path = Path(path)
+    if path.suffix.lower() in (".bmp", ".png"):
+        save_gray8(path, preview)
+        metadata = dict(metadata, stored_bits=8, color_model="grayscale", encoder="OpenCV",
+                        png_compression=0 if path.suffix.lower() == ".png" else None)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.stem + ".partial" + path.suffix)
+        if path.suffix.lower() in (".tif", ".tiff"):
+            try:
+                tifffile.imwrite(temporary, intensity.astype(np.float32), photometric="minisblack", compression=None)
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        else:
+            raise ValueError("8 bit BMP または PNG を選んでください")
     path.with_suffix(path.suffix + ".json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-    with path.with_suffix(path.suffix + ".csv").open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["z_mm", "tamura_filtered_std_over_mean", "tamura_unfiltered_std_over_mean"])
-        writer.writerows(curve)
+    if curve is not None:
+        with path.with_suffix(path.suffix + ".csv").open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["z_mm", "tamura_filtered_std_over_mean", "tamura_unfiltered_std_over_mean"])
+            writer.writerows(curve)

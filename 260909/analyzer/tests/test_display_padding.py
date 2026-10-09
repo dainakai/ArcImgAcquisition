@@ -134,16 +134,15 @@ def test_padding_latest_request_wins_keeps_view_and_exports_current_image(app, t
             viewer.padding.setCurrentIndex(viewer.padding.findData(size))
             wait(app, lambda: w.worker is None)
             assert viewer.rendered.padding_size == size
-            for suffix in ('.tiff', '.png'):
+            for suffix in ('.bmp', '.png'):
                 saved = tmp_path/f'pad{size}{suffix}'
                 def choose(parent, title, default, filters):
-                    assert f'_pad{size or "none"}.tiff' in default
-                    return str(saved), 'PNG' if suffix == '.png' else 'TIFF'
+                    assert f'_pad{size or "none"}.bmp' in default
+                    return str(saved), 'PNG' if suffix == '.png' else 'BMP'
                 monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose)
                 a.save_image()
                 wait(app, lambda: w.worker is None)
-                expected = viewer.rendered.filtered if suffix == '.tiff' else view.pixels
-                np.testing.assert_array_equal(read_image(saved), expected)
+                np.testing.assert_array_equal(read_image(saved), view.pixels)
                 metadata = json.loads(saved.with_suffix(suffix+'.json').read_text())
                 assert metadata['display_padding_size'] == size and metadata['tamura_padding_size'] == 4096
                 assert metadata['display_fft_shape'] == ([size]*2 if size else [40, 50])

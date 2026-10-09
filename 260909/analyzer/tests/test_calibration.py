@@ -73,4 +73,4 @@ def test_prior_piv_method_recovers_large_offset_and_affine_warp(monkeypatch):
     assert rms < .15, rms
     assert 18 <= stats['inliers'] < 70
     assert stats['holdout_rms_px'] < .15
-    assert stats['registration_settings']['window_px'] == 128
+    assert stats['registration_settings']['window_px'] == 256

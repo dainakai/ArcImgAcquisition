@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         self.session_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         tip(self.session_label, str(self.session.path)+"\n現在の保存セッションです。再生画像とCapture画像を同じセッション内に保存します。")
         session_row.addWidget(self.session_label, 1)
-        session_row.addWidget(QLabel("N: 明暗　Q / Esc: 終了"))
+        session_row.addWidget(QLabel("N: 明暗　Q / Esc: 計算を中断　×: 終了"))
         self.session_button = button("新規セッション", self.new_session,
             "以後の画像を保存する新しいセッションを作ります。現在の入力画像や補正は保持します。カメラ接続中は切断してから操作してください。")
         session_row.addWidget(self.session_button)
@@ -111,9 +111,9 @@ class MainWindow(QMainWindow):
         self.message.setWordWrap(True)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.message)
-        tip(title, "ホイール: 拡大縮小、ドラッグ: 移動、N: コントラスト切替、Q / Esc: 終了。各操作の説明はマウスを重ねて表示します。")
+        tip(title, "ホイール: 拡大縮小、ドラッグ: 移動、N: コントラスト切替、Q / Esc: 計算を中断。終了はウィンドウの×ボタンです。")
         self.shortcuts = []
-        for key, callback in (("N", self.toggle_contrast), ("Q", self.close), ("Esc", self.close)):
+        for key, callback in (("N", self.toggle_contrast), ("Q", self.stop), ("Esc", self.stop)):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(callback)
             self.shortcuts.append(shortcut)
@@ -152,7 +152,7 @@ class MainWindow(QMainWindow):
         busy = self.worker is not None
         for workspace in self.workspaces:
             workspace.update_controls()
-        self.stop_button.setEnabled(busy and self.kind in ("Analyze", "焦点探索", "深度再生", "ベクトルマップ"))
+        self.stop_button.setEnabled(busy and self.kind in ("Analyze", "焦点探索", "深度再生", "ベクトルマップ", "MinIP"))
         self.connect_button.setEnabled(not busy)
         self.connect_button.setText("カメラを切断" if self.camera else "カメラを接続")
         self.simulate_button.setEnabled(not busy and self.camera is None)
@@ -182,6 +182,12 @@ class MainWindow(QMainWindow):
             if owner:
                 owner.on_progress(stage, current, total, data)
         def success(result):
+            if worker.cancellation.event.is_set():
+                if kind in ("MinIP", "深度再生", "ベクトルマップ"):
+                    cancelled()
+                    return
+                if kind == "Analyze":
+                    result.stopped = True
             if kind == "カメラ接続" or valid():
                 callback(result)
         def failed(error):
@@ -194,10 +200,12 @@ class MainWindow(QMainWindow):
         def cancelled():
             if valid():
                 self.progress_label.setText("中断しました")
-        worker.progress.connect(progress)
-        worker.succeeded.connect(success)
-        worker.failed.connect(failed)
-        worker.cancelled.connect(cancelled)
+        # Python closures have no QObject receiver affinity. Explicitly queue
+        # them onto the GUI thread; never touch widgets from Worker.run().
+        worker.progress.connect(progress, Qt.ConnectionType.QueuedConnection)
+        worker.succeeded.connect(success, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(failed, Qt.ConnectionType.QueuedConnection)
+        worker.cancelled.connect(cancelled, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(self.finished)
         self.update_controls()
         worker.start()
@@ -207,6 +215,7 @@ class MainWindow(QMainWindow):
         old = self.worker
         self.worker = self.owner = None
         if old:
+            old.wait()  # finished can precede native thread-local cleanup.
             old.deleteLater()
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
@@ -221,6 +230,8 @@ class MainWindow(QMainWindow):
                     break
 
     def stop(self):
+        if self.closing or self.kind not in ("Analyze", "焦点探索", "深度再生", "ベクトルマップ", "MinIP"):
+            return
         for workspace in self.workspaces:
             for viewer in workspace.viewers:
                 viewer.restore_rendered_selection()
@@ -308,6 +319,12 @@ class MainWindow(QMainWindow):
                 workspace.maximum[camera].setValue(hi)
             for widget, value in ((workspace.step, config.scan_step_mm), (workspace.iterations, config.gs_iterations)):
                 widget.setValue(value)
+        minip = self.acquisition.minip
+        minip.minimum.setValue(config.scan_bounds(0)[0])
+        minip.maximum.setValue(config.scan_bounds(0)[1])
+        minip.step.setValue(config.scan_step_mm)
+        minip.iterations.setValue(config.gs_iterations)
+        minip.padding.setCurrentIndex(minip.padding.findData(config.display_padding_size))
         self.notify("設定を更新しました。" + ("光学条件が変わったため、キャリブレーションを再適用または再計算してください。" if physical_changed else ""))
         self.update_controls()
 

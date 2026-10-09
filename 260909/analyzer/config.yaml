@@ -30,9 +30,9 @@ output_dir: captures
 calibration_file: null
 camera_library: null
 slider_debounce_ms: 160
-calibration_window_px: 128
+calibration_window_px: 256
 calibration_step_px: 256
-calibration_search_px: 12
+calibration_search_px: 32
 calibration_min_matches: 15
 calibration_max_rms_px: 1.0
 calibration_max_holdout_px: 1.5
